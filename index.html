@@ -1110,6 +1110,104 @@ function bkImport(o){
 function bkApply(txt){ try{ bkImport(JSON.parse(txt)); PROF=null; save(); toast('Sauvegarde chargée'); render(); }catch(e){ toast('Sauvegarde illisible : copie le texte complet ou choisis le fichier'); } }
 function bkDownload(txt){ try{ const u=URL.createObjectURL(new Blob([txt],{type:'application/json'})), a=document.createElement('a'); a.href=u; a.download='carnet-de-menus-sauvegarde.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),2000); }catch(e){} }
 document.addEventListener('change', e=>{ const f=e.target; if(f && f.id==='bk-file' && f.files && f.files[0]){ f.files[0].text().then(bkApply); f.value=''; } });
+/* ===== Frigo : import d'une facture de drive ou d'une liste de courses ===== */
+const RC_SKIP = /^\W*(sous[- ]?total|total|tva|montant|net a payer|a payer|paye|carte|cb|espece|rendu|remise|economie|fidelite|cagnotte|livraison|frais|service|facture|date|numero|n°|magasin|retrait|client|adresse|merci|tel|siret|ticket|designation|quantite|qte|prix|sac|consigne|emballage|bon de|code|reference|page|commande|article)\b/;
+const RC_PRICE = /(?:\d{1,4}[.,]\d{2}\s*(?:€|eur(?:os?)?)?|(?:€|eur)\s*\d+(?:[.,]\d+)?)/gi;
+function rcLine(raw){
+  let s = String(raw).replace(/\s+/g,' ').trim();
+  if(s.length<3 || /@|www\.|https?:/i.test(s) || RC_SKIP.test(String(s).toLowerCase().normalize('NFD').replace(/\p{M}/gu,''))) return null;
+  const hadPrice = new RegExp(RC_PRICE.source,'i').test(s);
+  s = s.replace(RC_PRICE,' ').replace(/€/g,' ').replace(/\s+/g,' ').trim();
+  if(!/[a-zà-ÿ]{3}/i.test(s)) return null;
+  let q = 1, size = '', m;
+  s = s.replace(/\b(?:\d+\s*[x×]\s*)?\d+(?:[.,]\d+)?\s*(?:kg|g|cl|ml|l)\b/gi, mm=>{ if(!size) size=mm.trim(); return ' '; }).replace(/\s+/g,' ').trim();
+  if((m=/^(\d{1,2})\s*[x×]\s*(.+)$/i.exec(s))) { q=+m[1]; s=m[2]; }
+  else if((m=/^(\d{1,2})\s+(.+)$/.exec(s))) { q=+m[1]; s=m[2]; }
+  else if((m=/^(.+?)\s*[x×]\s*(\d{1,2})$/i.exec(s))) { q=+m[2]; s=m[1]; }
+  else if((m=/^(.+?)\s+(\d{1,2})$/.exec(s))) { q=+m[2]; s=m[1]; }
+  if(q<1 || q>30) q=1;
+  s = s.replace(/\b(?:lot|pack)\s*(?:de\s*)?\d+\b/gi,' ').replace(/^[\s\-–•*·✓☐□.)(]+/,'').replace(/^(?:de |du |des |d['’])\s*/i,'').replace(/[\s\-–,;:]+$/,'').replace(/\s+/g,' ').trim();
+  if(s.length<2 || !/[a-zà-ÿ]{2}/i.test(s)) return null;
+  return {name:s, q, size};
+}
+function rcMatch(name){
+  const L=' '+normI(name)+' ', cat=catalog(); let best=null;
+  const test=k=>{ if(L.includes(' '+k+' ') && (!best || k.length>best.length)) best=k; };
+  cat.forEach((c,k)=>test(k));
+  Object.keys(SYN).forEach(s=>{ if(L.includes(' '+s+' ')) test(SYN[s]); });
+  return best ? cat.get(best) : null;
+}
+function rcParse(text){
+  const rows=[], seen={};
+  String(text).split(/\r?\n/).forEach(line=>{
+    const parts = (!/\d[.,]\d{2}/.test(line) && /;|,(?=\s|$)/.test(line)) ? line.split(/;|,(?=\s|$)/) : [line];
+    parts.forEach(part=>{
+      const r=rcLine(part); if(!r) return;
+      const c=rcMatch(r.name);
+      const nm = c ? c.n : r.name.charAt(0).toUpperCase()+r.name.slice(1).toLowerCase();
+      const e = c ? c.e : RMAP[guessRayon(r.name)].e;
+      const k=keyOf(nm);
+      if(seen[k]!==undefined){ rows[seen[k]].q=Math.min(99,rows[seen[k]].q+r.q); return; }
+      seen[k]=rows.length; rows.push({on:true,name:nm,e,q:r.q,size:r.size,raw:String(part).trim()});
+    });
+  });
+  return rows;
+}
+function rcHtml(h){
+  const x=h.replace(/<(script|style)[\s\S]*?<\/\1>/gi,' ').replace(/<\s*(br|\/p|\/div|\/tr|\/li|\/h\d)[^>]*>/gi,'\n').replace(/<\/t[dh]>/gi,'  ').replace(/<[^>]+>/g,' ');
+  const ta=document.createElement('textarea'); ta.innerHTML=x; return ta.value;
+}
+function rcLoad(src){ return new Promise((ok,ko)=>{ const s=document.createElement('script'); s.src=src; s.onload=ok; s.onerror=ko; document.head.appendChild(s); }); }
+async function rcPdf(file){
+  const base='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  if(!window.pdfjsLib) await rcLoad(base+'pdf.min.js');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = base+'pdf.worker.min.js';
+  const pdf = await window.pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  const lines=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const tc = await (await pdf.getPage(p)).getTextContent(), rows={};
+    tc.items.forEach(it=>{ if(!it.str.trim()) return; const y=Math.round(it.transform[5]/3); (rows[y]=rows[y]||[]).push({x:it.transform[4],s:it.str.trim()}); });
+    Object.keys(rows).map(Number).sort((a,b)=>b-a).forEach(y=>lines.push(rows[y].sort((a,b)=>a.x-b.x).map(i=>i.s).join('  ')));
+  }
+  if(!lines.length) throw new Error('image');
+  return lines.join('\n');
+}
+function rcRun(){
+  const rows=rcParse(S.rc.text);
+  if(!rows.length){ S.rc.stage='in'; S.rc.msg='Aucun article repéré. Vérifie le texte ou colle ta liste (un article par ligne).'; }
+  else { S.rc.rows=rows; S.rc.stage='review'; S.rc.msg=''; }
+}
+async function rcFile(file){
+  S.rc = S.rc || {stage:'in',text:'',rows:[],msg:''}; S.rc.msg='Lecture du fichier…'; render();
+  try{
+    let tx; const nm=file.name.toLowerCase();
+    if(nm.endsWith('.pdf') || file.type==='application/pdf') tx = await rcPdf(file);
+    else { tx = await file.text(); if(/\.html?$/.test(nm) || /<html|<body|<table/i.test(tx.slice(0,3000))) tx = rcHtml(tx); }
+    S.rc.text = tx; rcRun();
+  }catch(err){ S.rc.stage='in'; S.rc.msg = (err && err.message==='image') ? 'Ce PDF ne contient pas de texte (image scannée). Colle le texte ou recopie ta liste.' : 'Fichier illisible : copie-colle plutôt le texte de la facture.'; }
+  render();
+}
+function viewReceiptSheet(){
+  const rc = S.rc || {stage:'in',text:'',rows:[],msg:''};
+  const head = `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Ajouter des courses"><div class="plate" style="--tile:var(--cP)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">🧾</span></div><div class="mb">`;
+  let body;
+  if(rc.stage==='review'){
+    const nOn = rc.rows.filter(r=>r.on).length, ib='border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);padding:6px 8px;font:inherit';
+    body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Décoche ce qui n'est pas de la nourriture, corrige un nom ou une quantité si besoin.</p><div class="row"><button class="btn ghost sm" data-act="rcall" data-v="1">Tout cocher</button><button class="btn ghost sm" data-act="rcall" data-v="0">Tout décocher</button></div>
+    <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div>${r.size?`<div class="note" style="margin:0 0 4px 30px">${esc(r.size)}</div>`:''}`).join('')}</div>
+    <div class="row"><button class="btn" data-act="rcadd" ${nOn?'':'disabled'}>Ajouter ${nOn} article${nOn>1?'s':''} au frigo</button><button class="btn ghost" data-act="rcback">Retour</button></div>`;
+  } else {
+    body = `<h2>Ajouter des courses</h2><p class="note" style="margin:0">Choisis la facture de ton drive (PDF ou texte) ou colle une liste de courses. Les articles et leurs quantités sont repérés, tu les vérifies, puis ils rejoignent le frigo.</p>
+    <div class="row"><label class="btn" style="cursor:pointer">📂 Choisir un fichier<input type="file" id="rc-file" accept=".pdf,.txt,.csv,.html,.htm,application/pdf,text/plain,text/csv,text/html" style="display:none"></label></div>
+    <div class="fld"><label for="rc-text">Ou colle le texte / ta liste</label><textarea id="rc-text" rows="6" style="${OB_IN};font:14px/1.4 inherit" placeholder="2 x Lait demi-écrémé 1 L&#10;500 g de riz&#10;6 œufs&#10;Gnocchi frais 500 g">${esc(rc.text)}</textarea></div>
+    ${rc.msg?`<p class="note" style="margin:0">${esc(rc.msg)}</p>`:''}
+    <div class="row"><button class="btn" data-act="rcparse">Analyser</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div>
+    <p class="note" style="margin:0">Les photos de ticket ne sont pas lues : utilise le PDF de la facture ou recopie la liste.</p>`;
+  }
+  return head+body+'</div></div></div>';
+}
+document.addEventListener('input', e=>{ const t=e.target; if(!S.rc || !t) return; if(t.id==='rc-text') S.rc.text=t.value; else if(t.dataset && t.dataset.rcname!==undefined){ const r=S.rc.rows[+t.dataset.rcname]; if(r) r.name=t.value; } });
+document.addEventListener('change', e=>{ const f=e.target; if(f && f.id==='rc-file' && f.files && f.files[0]){ rcFile(f.files[0]); f.value=''; } });
 function badges(d, withAp){
   let h = `<span class="chip st" ${tile(d.st)}>${esc(ST[d.st].n)}</span>`;
   if(isCandidate(d)) h += d.from ? `<span class="chip new">Variante de ${esc(d.from)}</span>` : `<span class="chip new">${d.kind==='mine'?'Ma création à valider':'À découvrir'}</span>`;
@@ -1446,6 +1544,7 @@ function viewFridgeMain(){
     ${fridgeCard(stock,total,mood)}<div class="fr-add"><input id="fr-in" list="fr-list" placeholder="Un ingrédient : poulet, tomates, crème…" aria-label="Ajouter un ingrédient au frigo" autocomplete="off" enterkeyhint="done">
     <datalist id="fr-list">${[...cat.values()].map(c=>c.n).sort((a,b)=>a.localeCompare(b,'fr')).map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>
     <button class="plus" data-act="fradd" aria-label="Ajouter au frigo">+</button></div>
+    <div class="row" style="margin:8px 0"><button class="btn ghost sm" data-act="rcopen">🧾 Ajouter une facture de drive ou une liste de courses</button></div>
     <div class="row" style="margin-bottom:14px"><button class="btn ghost sm" data-act="newing">✨ Créer un nouvel ingrédient</button></div>`;
   if(!total){
     h += `<div class="fr-empty"><div class="big">🥕 🧀 🍗 🥚</div><h3>Rien ici pour l'instant</h3><p>Après les courses, ajoute ce que tu as rangé : tape un nom ci-dessus, ou pioche dans le catalogue en bas de page.</p></div>`;
@@ -1557,6 +1656,7 @@ function viewFridge(){
 
 function viewSheet(){
   if(S.sheet==='sync') return viewSyncSheet();
+  if(S.sheet==='receipt') return viewReceiptSheet();
   if(S.sheet==='new'){
     return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Nouvel ingrédient">
       <div class="plate" style="--tile:var(--cP)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">✨</span></div>
@@ -1966,6 +2066,22 @@ document.addEventListener('click', e=>{
   else if(a==='apf'){ S.apf=v; }
   else if(a==='ppset'){ const nv=Math.round(+v); S.pp=S.pp||{}; if(nv<=0||nv===hhSize()) delete S.pp[id]; else S.pp[id]=Math.min(100,nv); saveLocal(); }
   else if(a==='nf'){ S.nf=v; }
+  else if(a==='rcopen'){ S.rc={stage:'in',text:'',rows:[],msg:''}; S.sheet='receipt'; S.open=null; S.focusModal=true; }
+  else if(a==='rcparse'){ const ta=document.getElementById('rc-text'); if(ta) S.rc.text=ta.value; rcRun(); }
+  else if(a==='rctog'){ const r=S.rc.rows[i]; if(r) r.on=!r.on; }
+  else if(a==='rcqty'){ const r=S.rc.rows[i]; if(r) r.q=Math.max(1,Math.min(99,r.q+(+v))); }
+  else if(a==='rcall'){ S.rc.rows.forEach(r=>{ r.on=v==='1'; }); }
+  else if(a==='rcback'){ S.rc.stage='in'; }
+  else if(a==='rcadd'){
+    let n=0;
+    S.rc.rows.forEach(r=>{
+      const name=(r.name||'').trim(); if(!r.on || !name) return;
+      const k=keyOf(name);
+      if(!catalog().has(k)){ const it={id:'i'+Date.now()+'_'+n,name,e:r.e||'🧺',type:'autre',sub:''}; S.myIng.push(it); applyMyIng(it); CATM=null; }
+      stockAdd(k,r.q); n++;
+    });
+    S.sheet=null; S.rc=null; save(); toast(n+' article'+(n>1?'s':'')+' ajouté'+(n>1?'s':'')+' au frigo');
+  }
   else if(a==='p2pinv'){ if(!S.link){ const n=Date.now(); S.ts=S.ts||{}; P2C.forEach(c=>{ S.ts[c]=n; }); S.link={role:'host',slot:'a',me:'cm-'+p2pRid(),peer:'',token:p2pRid()}; S.who='a'; saveLocal(); p2pStart(); } }
   else if(a==='p2pshare'){ const u=p2pLink(); if(navigator.share) navigator.share({title:'Carnet de menus',text:'Rejoins mon carnet de menus pour voter ensemble :',url:u}).catch(()=>{}); else if(navigator.clipboard) navigator.clipboard.writeText(u).then(()=>toast('Lien copié')); else toast(u); }
   else if(a==='p2punlink'){ if(confirm('Délier les deux applis ? Chacun garde ses données sur son appareil.')){ p2pStop(); S.link=null; S.who=null; saveLocal(); } }
