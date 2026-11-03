@@ -308,7 +308,7 @@ button,select,summary{touch-action:manipulation;-webkit-tap-highlight-color:tran
 <script>
 /* ================= Liaison indépendante (hors Claude) : état ================= */
 var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false};
-const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud'];
+const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud','upref'];
 /* ================= Données ================= */
 const KEY = 'carnet-menus-v1';
 const ST = {
@@ -487,7 +487,7 @@ let CATM = null;
 function save(){ saveLocal(); pushDiff(); }
 function saveLocal(){
   PROF = null; CATM = null; p2pTouch();
-  try{ localStorage.setItem(KEY, JSON.stringify({plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud}, (k,v)=>k==='_v'?undefined:v)); }catch(e){}
+  try{ localStorage.setItem(KEY, JSON.stringify({plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref}, (k,v)=>k==='_v'?undefined:v)); }catch(e){}
 }
 
 /* ================= Dates & saisons ================= */
@@ -916,7 +916,7 @@ const missing = d => d.ing.filter(x=>!have(x));
 function stockAdd(k,dq){
   const c = catalog().get(k), cur = S.fridge[k];
   if(!c && !cur) return;
-  const un = unitOf(c?c.n:k), it = cur || (S.fridge[k] = {n:c.n,e:c.e,r:c.r,q:0,u:un,s:UNIT_S[un]});
+  const up = (S.upref||{})[k], un = up?up.u:unitOf(c?c.n:k), it = cur || (S.fridge[k] = {n:c.n,e:c.e,r:c.r,q:0,u:un,s:up?up.s:UNIT_S[un]});
   it.q = Math.max(0, it.q+dq); S.pop = dq>0 ? k : null; S.gone = dq<0 ? {e:it.e,r:it.r} : null;
 }
 function fridgeChip(d){
@@ -1097,10 +1097,10 @@ function adaptBox(d){
   return out.length ? out.join('')+'<div class="note">Repères indicatifs, à adapter à chacun. En cas de doute, demande conseil à un professionnel de santé.</div>' : '';
 }
 const OB_BK = `<div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px"><h3>J'ai déjà un compte</h3><p class="note">Colle ici une sauvegarde créée depuis un autre navigateur, ou choisis le fichier.</p><textarea id="bk-ob" rows="3" style="${OB_IN};font:13px monospace" placeholder="Colle ta sauvegarde ici"></textarea><div class="row" style="margin-top:8px"><button class="btn" data-ob="bkload">Charger la sauvegarde</button><label class="btn ghost sm" style="cursor:pointer">📂 Choisir un fichier<input type="file" id="bk-file" accept=".json,application/json,text/plain" style="display:none"></label><button class="btn ghost sm" data-ob="bkmake">Créer une sauvegarde</button></div></div>`;
-function bkExport(){ return JSON.stringify({v:2,plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud},(k,x)=>k==='_v'?undefined:x); }
+function bkExport(){ return JSON.stringify({v:2,plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref},(k,x)=>k==='_v'?undefined:x); }
 function bkImport(o){
   if(!o || typeof o!=='object' || !('plans' in o || 'custom' in o || 'profile' in o)) throw new Error('format');
-  ['plans','prefs','off','adopted','votes','excl','fridge','checked','pp','ts','buys'].forEach(k=>{ if(o[k] && typeof o[k]==='object') S[k]=o[k]; });
+  ['plans','prefs','off','adopted','votes','excl','fridge','checked','pp','ts','buys','upref'].forEach(k=>{ if(o[k] && typeof o[k]==='object') S[k]=o[k]; });
   if(Array.isArray(o.myIng)){ S.myIng.slice().forEach(unapplyMyIng); S.myIng=o.myIng; S.myIng.forEach(applyMyIng); }
   if(Array.isArray(o.custom)) S.custom=o.custom;
   if(typeof o.bud==='number') S.bud=o.bud;
@@ -1223,8 +1223,8 @@ function qLabel(i){ const a=i.q*(i.s||1), u=i.u||'u', f=v=>String(Math.round(v*1
 function packOf(k){ const it=S.fridge[k], c=catalog().get(k), u=(it&&(it.u||'u'))||unitOf(c?c.n:k); return UNIT_PACK[u]||1; }
 function stockAmt(k,amt,unit){
   const c=catalog().get(k); if(!c || !(amt>0)) return;
-  const s=UNIT_S[unit]||1; let it=S.fridge[k];
-  if(!it) it=S.fridge[k]={n:c.n,e:c.e,r:c.r,q:0,u:unit,s};
+  const s=UNIT_S[unit]||1, up=(S.upref||{})[k]; let it=S.fridge[k];
+  if(!it) it=S.fridge[k]={n:c.n,e:c.e,r:c.r,q:0,u:unit,s:(up&&up.u===unit)?up.s:s};
   if((it.u||'u')!==unit){ if(it.q>0){ stockAdd(k,1); return; } it.u=unit; it.s=s; }
   it.q+=Math.max(1,Math.round(amt/(it.s||1))); S.pop=k;
 }
@@ -1241,6 +1241,16 @@ function rcDate(tx){
 function rcDocTotal(tx){
   let v=0; String(tx).split(/\r?\n/).forEach(l=>{ const n=l.toLowerCase().normalize('NFD').replace(/\p{M}/gu,''); const m=/(total (a payer|ttc|commande|facture)|net a payer|montant (ttc|total))\D{0,15}(\d{1,5}[.,]\d{2})/.exec(n); if(m) v=parseFloat(m[4].replace(',','.')); });
   return v;
+}
+function viewFeditSheet(){
+  const it=S.fridge[S.fe]; if(!it) return '';
+  const u=it.u||'u', s=it.s||1, a=Math.round(it.q*s*100)/100, ib=OB_IN, o=(v,l)=>`<option value="${v}" ${u===v?'selected':''}>${l}</option>`;
+  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Modifier ${esc(it.n)}"><div class="plate" style="--tile:var(--cP)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">${it.e}</span></div><div class="mb"><h2>${esc(it.n)}</h2><p class="note" style="margin:0">Change l'unité, la quantité en stock et la valeur des boutons + et −.</p>
+  <div class="fld"><label for="fe-unit">Unité</label><select id="fe-unit">${o('u','Unités (pièces)')}${o('g','Grammes')}${o('cl','Centilitres')}</select></div>
+  <div class="fld"><label for="fe-amt">Quantité en stock (dans cette unité)</label><input id="fe-amt" type="number" inputmode="decimal" min="0" step="any" value="${a}" style="${ib}"></div>
+  <div class="fld"><label for="fe-step">Valeur d'un appui sur + ou −</label><input id="fe-step" type="number" inputmode="decimal" min="0.1" step="any" value="${s}" style="${ib}"></div>
+  <p class="note" style="margin:0">La quantité est arrondie à un multiple de cette valeur : mets une petite valeur (10 g, 5 cl) pour plus de précision.</p>
+  <div class="row"><button class="btn" data-act="fesave">Enregistrer</button><button class="btn ghost" data-act="sheetclose">Annuler</button></div></div></div></div>`;
 }
 function viewReadySheet(){
   const ib=OB_IN, o=(o,l)=>`<option value="${o}">${l}</option>`;
@@ -1282,7 +1292,7 @@ function viewBudget(){
   <div style="${card}"><h3 style="font-size:18px">Factures</h3><ul style="list-style:none;margin:8px 0 0;padding:0">${buys.slice().reverse().map(b=>`<li style="display:flex;gap:8px;align-items:center;padding:4px 0"><span style="flex:1">${esc(new Date(b.date+'T12:00:00').toLocaleDateString('fr-FR'))} · ${b.items.length} article${b.items.length>1?'s':''} · <b>${fe(tot(b))}</b></span><button class="opt" data-act="budel" data-id="${b.id}" aria-label="Supprimer cette facture">🗑️</button></li>`).join('')}</ul></div>`;
 }
 document.addEventListener('input', e=>{ const t=e.target; if(t.id==='rc-date' && S.rc) S.rc.date=t.value; if(t.id==='ni-name'){ const u=document.getElementById('ni-unit'); if(u && !u.dataset.t) u.value=unitOf(t.value); } });
-document.addEventListener('change', e=>{ const t=e.target; if(t.id==='ni-unit') t.dataset.t='1'; if(t.id==='bud-in'){ S.bud=Math.max(0,parseFloat(t.value)||0); save(); render(); } });
+document.addEventListener('change', e=>{ const t=e.target; if(t.id==='ni-unit') t.dataset.t='1'; if(t.id==='fe-unit'){ const st=document.getElementById('fe-step'); if(st) st.value=UNIT_S[t.value]; } if(t.id==='bud-in'){ S.bud=Math.max(0,parseFloat(t.value)||0); save(); render(); } });
 function badges(d, withAp){
   let h = `<span class="chip st" ${tile(d.st)}>${esc(ST[d.st].n)}</span>`;
   if(isCandidate(d)) h += d.from ? `<span class="chip new">Variante de ${esc(d.from)}</span>` : `<span class="chip new">${d.kind==='mine'?'Ma création à valider':'À découvrir'}</span>`;
@@ -1501,7 +1511,7 @@ function sticker(i,idx){
   const rot = [-2,1.5,-1,2,.5][idx%5];
   return `<div class="sk ${S.pop===i.k?'pop':''} ${i.q===1?'low':''}" style="--rot:${rot}deg"><span class="badge" aria-label="${qLabel(i)} en stock" style="width:auto;min-width:22px;padding:0 6px;border-radius:999px">${qLabel(i)}</span>
     <span class="em">${i.e}</span><b>${esc(i.n)}</b><small class="note" style="display:block;font-size:11px">${nutOf(i.n)[1]} kcal/100 g</small>${i.q===1?'<span class="last">🔔 dernier !</span>':''}
-    <div class="qb"><button data-act="fq" data-k="${esc(i.k)}" data-d="-1" aria-label="Retirer un ${esc(i.n)}">−</button><button data-act="fq" data-k="${esc(i.k)}" data-d="1" aria-label="Ajouter un ${esc(i.n)}">+</button></div></div>`;
+    <div class="qb"><button data-act="fq" data-k="${esc(i.k)}" data-d="-1" aria-label="Retirer un ${esc(i.n)}">−</button><button data-act="fedit" data-k="${esc(i.k)}" aria-label="Modifier ${esc(i.n)}">✏️</button><button data-act="fq" data-k="${esc(i.k)}" data-d="1" aria-label="Ajouter un ${esc(i.n)}">+</button></div></div>`;
 }
 
 function fridgeCard(stock,total,mood){
@@ -1638,7 +1648,7 @@ function viewFridgeMain(){
     });
   }
   if(gone.length){
-    h += `<h2 class="sec">🛒 À racheter</h2><p class="lead">Les ingrédients épuisés. Un tap quand tu les as rachetés.</p><div class="chips" style="gap:8px">${gone.map(i=>`<span style="display:inline-flex;gap:4px"><button class="chip rb" data-act="fq" data-k="${esc(i.k)}" data-d="1">${i.e} ${esc(i.n)}</button><button class="chip xb" data-act="fdel" data-k="${esc(i.k)}" aria-label="Oublier ${esc(i.n)}">✕</button></span>`).join('')}</div>`;
+    h += `<h2 class="sec">🛒 À racheter</h2><p class="lead">Les ingrédients épuisés. Un tap quand tu les as rachetés.</p><div class="chips" style="gap:8px">${gone.map(i=>`<span style="display:inline-flex;gap:4px"><button class="chip rb" data-act="fq" data-k="${esc(i.k)}" data-d="${packOf(i.k)}">${i.e} ${esc(i.n)}</button><button class="chip xb" data-act="fedit" data-k="${esc(i.k)}" aria-label="Modifier ${esc(i.n)}">✏️</button><button class="chip xb" data-act="fdel" data-k="${esc(i.k)}" aria-label="Oublier ${esc(i.n)}">✕</button></span>`).join('')}</div>`;
   }
   h += `<details class="fr-cat" style="margin-top:20px"><summary>📚 Tout le catalogue (${cat.size} ingrédients)</summary>${RAY.map(r=>{
     const l = [...cat.values()].filter(c=>c.r===r.k).sort((a,b)=>a.n.localeCompare(b.n,'fr'));
@@ -1734,6 +1744,7 @@ function viewSheet(){
   if(S.sheet==='sync') return viewSyncSheet();
   if(S.sheet==='receipt') return viewReceiptSheet();
   if(S.sheet==='ready') return viewReadySheet();
+  if(S.sheet==='fedit') return viewFeditSheet();
   if(S.sheet==='new'){
     return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Nouvel ingrédient">
       <div class="plate" style="--tile:var(--cP)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">✨</span></div>
@@ -2145,6 +2156,16 @@ document.addEventListener('click', e=>{
   else if(a==='ppset'){ const nv=Math.round(+v); S.pp=S.pp||{}; if(nv<=0||nv===hhSize()) delete S.pp[id]; else S.pp[id]=Math.min(100,nv); saveLocal(); }
   else if(a==='nf'){ S.nf=v; }
   else if(a==='bper'){ S.bper=v; }
+  else if(a==='fedit'){ S.fe=b.dataset.k; S.sheet='fedit'; S.focusModal=true; }
+  else if(a==='fesave'){
+    const it=S.fridge[S.fe], g=x=>document.getElementById(x);
+    if(it){
+      const unit=g('fe-unit').value, step=Math.max(0.1,parseFloat(g('fe-step').value)||UNIT_S[unit]), amt=Math.max(0,parseFloat(g('fe-amt').value)||0);
+      it.u=unit; it.s=step; it.q=amt>0?Math.max(1,Math.round(amt/step)):0; S.upref=S.upref||{}; S.upref[S.fe]={u:unit,s:step};
+      save(); toast(it.n+' : '+(it.q?qLabel(it):'épuisé'));
+    }
+    S.sheet=null;
+  }
   else if(a==='bmprev' || a==='bmnext'){ const k=S.bm||((S.buys||[]).map(x=>x.date.slice(0,7)).sort().pop()||''); if(k){ const x=new Date(+k.slice(0,4),+k.slice(5)-1+(a==='bmnext'?1:-1),1); S.bm=x.getFullYear()+'-'+pad(x.getMonth()+1); } }
   else if(a==='budel'){ if(confirm('Supprimer cette facture du budget ?')){ S.buys=(S.buys||[]).filter(x=>x.id!==id); save(); } }
   else if(a==='rdopen'){ S.sheet='ready'; S.open=null; S.focusModal=true; }
