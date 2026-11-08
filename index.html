@@ -307,7 +307,7 @@ button,select,summary{touch-action:manipulation;-webkit-tap-highlight-color:tran
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 /* ================= Liaison indépendante (hors Claude) : état ================= */
-var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false};
+var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false, err:'', last:0, hb:null};
 const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud','upref','edits'];
 /* ================= Données ================= */
 const KEY = 'carnet-menus-v1';
@@ -473,6 +473,7 @@ function mk(id, r, kind){
     ap:(rec[0]||'').split(',').filter(Boolean), t:+rec[1]||0, steps:(rec[2]||'').split('|').filter(Boolean)};
 }
 const BASE = BASE_ROWS.map((r,i)=>mk('b'+i,r,'base'));
+var GEN=[], GENM={}, IDEAS={}, WC=null;
 const DISC = DISC_ROWS.map((r,i)=>mk('d'+i,r,'new'));
 DISC.forEach(d=>{ if(!(d.ap||[]).includes('CK') && (/risotto|soupe|velout|potage|curry|chili|bolognaise|ratatouille|mijot|blanquette|dahl|lentille|tajine|couscous|riz|pâtes|gnocchi|mac|lasagne/i.test(d.name) || (d.ing||[]).some(x=>/riz|pâtes|macaroni|spaghetti|boulgour|quinoa|semoule|lentille/i.test(x)))){ d.ap=(d.ap||[]).concat('CK'); } });
 
@@ -524,12 +525,12 @@ function seasonChip(d){
 
 /* ================= Plats & votes ================= */
 const isPending = d => d.kind==='mine' && d.pending;
-function allOwn(){ return [...BASE, ...DISC.filter(d=>S.adopted[d.id]), ...S.custom.filter(d=>!d.pending)]; }
+function allOwn(){ return [...BASE, ...DISC.filter(d=>S.adopted[d.id]), ...GEN.filter(d=>S.adopted[d.id]), ...S.custom.filter(d=>!d.pending)]; }
 function candList(){ return [...DISC.filter(d=>!S.adopted[d.id]), ...S.custom.filter(d=>d.pending)]; }
 function isCandidate(d){ return (d.kind==='new' && !S.adopted[d.id]) || isPending(d); }
 function dishById(id){
   if(!id) return null;
-  return BASE.find(d=>d.id===id) || DISC.find(d=>d.id===id) || S.custom.find(d=>d.id===id) || null;
+  return BASE.find(d=>d.id===id) || DISC.find(d=>d.id===id) || GENM[id] || S.custom.find(d=>d.id===id) || IDEAS[id] || null;
 }
 function vstatus(id){
   const v = S.votes[id]||{a:0,l:0};
@@ -574,7 +575,7 @@ function ownPool(){
   const q = p.filter(d=>S.set.mush || !d.m);
   return q.length>=8 ? q : p;
 }
-function discoPool(){ return candList().filter(d=>vstatus(d.id)!=='no' && !excludedBy(d).length); }
+function discoPool(){ return [...candList(), ...GEN.filter(d=>!S.adopted[d.id])].filter(d=>vstatus(d.id)!=='no' && !excludedBy(d).length); }
 
 /* ---- Ingrédients retirés ---- */
 const EXRE = {
@@ -639,12 +640,12 @@ function weight(d){
   if(S.set.season){ const s = inSeason(d,curMonth()); if(s===true) w*=1.6; else if(s===false) w*=.3; }
   if(S.set.air && d.ap && d.ap.includes('AF')) w*=1.35;
   if(S.set.cook && d.ap && d.ap.includes('CK')) w*=1.8;
-  if(S.set.ufr && fridgeCount()>0 && d.ing && d.ing.length){ const f=1-missing(d).length/d.ing.length; w*=.4+5*f*f; }
+  if(S.set.ufr && fridgeCount()>0 && d.ing && d.ing.length){ const f=1-missing(d).length/d.ing.length; w*= f>=1 ? 14 : .25+3*f*f; }
   return Math.max(.1,w);
 }
 function wsample(arr,k){
   if(k<=0) return [];
-  return arr.map(d=>({d,k:-Math.log(Math.random())/weight(d)})).sort((a,b)=>a.k-b.k).slice(0,k).map(x=>x.d);
+  return arr.map(d=>({d,k:-Math.log(Math.random())/(WC&&WC.has(d.id)?WC.get(d.id):weight(d))})).sort((a,b)=>a.k-b.k).slice(0,k).map(x=>x.d);
 }
 function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
@@ -670,6 +671,7 @@ function penalty(list, prev){
     const b = list[i-1];
     if(b && d.st!=='L' && b.st===d.st) p+=4;
     if(prev.has(d.id)) p+=3;
+    if(S.set.ufr && WC && WC.get(d.id+'#m')>0) p+=2;
     if(S.set.season && inSeason(d,mo)===false) p+=3;
   });
   Object.keys(sc).forEach(k=>{ if(k!=='L' && sc[k]>cap) p+=10*(sc[k]-cap); });
@@ -683,8 +685,9 @@ function generate(){
   const slots = Array.from({length:n},(_,i)=>{ const o=old[i]; return (o && o.lock && dishById(o.id)) ? {id:o.id,lock:true,done:o.done} : null; });
   const fixed = new Set(slots.filter(Boolean).map(s=>s.id));
   const free = slots.map((s,i)=>s?-1:i).filter(i=>i>=0);
-  const own = ownPool().filter(d=>!fixed.has(d.id)), disc = discoPool().filter(d=>!fixed.has(d.id));
+  const own = ownPool().filter(d=>!fixed.has(d.id)), idea = (S.set.ufr && fridgeCount()>=3) ? fridgeIdeas(24).filter(d=>!excludedBy(d).length) : [], disc = discoPool().filter(d=>!fixed.has(d.id)).concat(idea);
   const prev = prevIds();
+  WC = new Map(); own.concat(disc).forEach(d=>{ WC.set(d.id,weight(d)); WC.set(d.id+'#m',missing(d).length); });
   let best=null, bp=1e9;
   for(let t=0;t<400;t++){
     const dn = Math.min(own.length?S.set.discover:free.length, disc.length, free.length);
@@ -694,7 +697,9 @@ function generate(){
     const p = penalty(list,prev)+Math.random()*.5;
     if(p<bp){bp=p;best=list;}
   }
+  WC = null;
   best.forEach((d,i)=>{ if(!slots[i] && d) slots[i]={id:d.id,lock:false}; });
+  slots.forEach(s=>{ if(s && s.id && IDEAS[s.id]){ s.id = ideaToCustom(IDEAS[s.id]).id; } });
   S.plans[S.week] = {mode:S.set.mode, slots};
   save();
 }
@@ -853,6 +858,77 @@ function saveComp(pending){
   dish.id = 'c'+Date.now(); dish.pending = !!pending;
   S.custom.push(dish); save();
   return dish;
+}
+/* ===== Générateur de recettes (variations et assemblages) ===== */
+function mulberry(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let x=Math.imul(a^a>>>15,1|a); x=x+Math.imul(x^x>>>7,61|x)^x; return ((x^x>>>14)>>>0)/4294967296; }; }
+function mkRecipe(sel){ const saved=C; C={form:sel.form,base:sel.base,prot:sel.prot,legs:sel.legs,fin:sel.fin,slot:0}; try{ return comp().dish; } finally { C=saved; } }
+const FINOK = {
+ gratin:['fromage râpé','emmental','gruyère','comté','parmesan','mozzarella','reblochon','raclette','cheddar','béchamel','crème','chapelure','ail','herbes fraîches'],
+ poele:['fromage râpé','parmesan','feta','chèvre','crème','sauce tomate','pesto','sauce soja','moutarde','citron','ail','herbes fraîches','paprika'],
+ creme:['crème','béchamel','parmesan','fromage râpé','emmental','comté','gruyère','Boursin','Kiri','fromage frais','chèvre','ricotta','ail','herbes fraîches'],
+ wok:['sauce soja','sauce curry','citron','ail','sésame','herbes fraîches','paprika'],
+ curry:['lait de coco','sauce curry','citron','ail','herbes fraîches','paprika','feta'],
+ roule:['Boursin','Kiri','fromage frais','chèvre','feta','ricotta','mozzarella','mayonnaise','sauce au yaourt','pesto','moutarde','herbes fraîches'],
+ sandwich:['cheddar','emmental','raclette','reblochon','mozzarella','chèvre','mayonnaise','sauce barbecue','sauce au yaourt','moutarde','herbes fraîches'],
+ croque:['emmental','gruyère','comté','béchamel','raclette','reblochon','chèvre','moutarde'],
+ pane:['sauce au yaourt','mayonnaise','sauce barbecue','moutarde','citron','chapelure'],
+ gaufre:['fromage râpé','emmental','cheddar','mozzarella','chèvre','sauce au yaourt','herbes fraîches'],
+ tarte:['crème','fromage râpé','emmental','gruyère','comté','chèvre','feta','ricotta','moutarde','herbes fraîches'],
+ pizza:['sauce tomate','pesto','mozzarella','chèvre','feta','parmesan','fromage râpé','herbes fraîches','ail'],
+ bowl:['sauce soja','sauce au yaourt','citron','sésame','herbes fraîches','feta','ail','paprika'],
+ soupe:['crème','parmesan','comté','herbes fraîches','citron','ail','paprika'],
+ salade:['citron','herbes fraîches','feta','chèvre','mozzarella','parmesan','sauce au yaourt','moutarde','sésame','miel'],
+ omelette:['fromage râpé','emmental','gruyère','chèvre','feta','herbes fraîches','ail','paprika']
+};
+function finsFor(k){ const ok=FINOK[k]||[]; return FINS.map(x=>x[0]).filter(n=>ok.includes(n)); }
+function protsFor(k){ return PROTS.map(x=>x[0]).filter(n=>!(['saumon fumé','surimi'].includes(n) && !['salade','roule','sandwich','bowl','pizza'].includes(k))); }
+function genDishes(n){
+  const R=mulberry(20261108), pick=a=>a[Math.floor(R()*a.length)], out=[], seen=new Set(DISC.map(d=>d.name.toLowerCase()));
+  const some=(arr,k)=>{ const r=[]; while(r.length<k){ const x=pick(arr); if(!r.includes(x)) r.push(x); } return r; };
+  for(let g=0; out.length<n && g<n*30; g++){
+    const f=pick(FORMS), base=pick(f.b), pp=protsFor(f.k), prot=(R()<.82 && pp.length)?pick(pp):'';
+    const legs=some(VEG,base==='legumes'?2+Math.floor(R()*2):1+Math.floor(R()*2)).map(v=>v.k);
+    const fp=finsFor(f.k), fin=fp.length?some(fp,Math.min(fp.length,1+Math.floor(R()*2))):[];
+    const d=mkRecipe({form:f.k,base,prot,legs,fin}), key=d.name.toLowerCase();
+    if(seen.has(key)) continue; seen.add(key);
+    d.id='dg'+out.length; d.kind='new'; d.gen=true; d.pending=false; d.from='';
+    out.push(d);
+  }
+  return out;
+}
+GEN = genDishes(480); GENM = Object.fromEntries(GEN.map(d=>[d.id,d]));
+function fridgeIdeas(n){
+  const R=Math.random, pick=a=>a[Math.floor(R()*a.length)], shuf=a=>a.slice().sort(()=>R()-.5);
+  const bases=BASES.filter(b=>b[0]!=='legumes' && b[4] && have(b[4])).map(b=>b[0]);
+  const prots=PROTS.filter(x=>have(x[0])).map(x=>x[0]), legs=VEG.filter(v=>have(v.k)).map(v=>v.k);
+  const fins=FINS.filter(x=>have(x[0])), sauces=fins.filter(x=>x[2]==='Sauces').map(x=>x[0]), allFin=fins.map(x=>x[0]);
+  const forms=FORMS.filter(f=>(f.b.some(b=>bases.includes(b)) || (f.b.includes('legumes') && legs.length)) && (sauces.length || !['creme','gratin'].includes(f.k)) && (f.k!=='curry' || allFin.includes('lait de coco')) && (f.k!=='pane' || allFin.includes('chapelure')));
+  const out=[], seen=new Set();
+  if(!forms.length) return out;
+  for(let g=0; out.length<n && g<n*25; g++){
+    const f=pick(forms), base=pick(f.b.filter(b=>bases.includes(b) || (b==='legumes' && legs.length)));
+    const pp=prots.filter(x=>protsFor(f.k).includes(x)), prot=(pp.length && R()<.85)?pick(pp):'';
+    const pl=shuf(legs).slice(0,base==='legumes'?Math.min(3,legs.length):Math.min(2,legs.length));
+    if(base==='legumes' && !pl.length) continue;
+    const ok=finsFor(f.k), fin=shuf(allFin.filter(x=>ok.includes(x))).slice(0,1+Math.floor(R()*2)), sf=sauces.filter(x=>ok.includes(x));
+    if(['creme','gratin'].includes(f.k) && !fin.some(x=>sf.includes(x))){ if(!sf.length) continue; fin.push(pick(sf)); }
+    const d=mkRecipe({form:f.k,base,prot,legs:pl,fin});
+    if(missing(d).length || seen.has(d.name)) continue; seen.add(d.name);
+    d.id='if'+Date.now().toString(36)+out.length; d.kind='new'; d.gen=true; d.idea=true; d.pending=false; d.from='';
+    IDEAS[d.id]=d; out.push(d);
+  }
+  return out;
+}
+function ideaToCustom(d){ const nd=Object.assign({},d,{id:'c'+Date.now()+'_'+Math.floor(Math.random()*1e4),kind:'mine',pending:false,idea:false,gen:false}); S.custom.push(nd); return nd; }
+function viewIdeasSheet(){
+  const I=S.ideas||{mode:'any',list:[]}, ds=I.list.map(dishById).filter(Boolean);
+  const rows=ds.map(d=>`<div style="margin:10px 0"><button class="opt" style="display:block;width:100%;text-align:left" data-act="ideaopen" data-id="${d.id}">${d.e} ${esc(d.name)}</button><div class="chips" style="margin-top:4px">${I.mode==='fridge'?fridgeChip(d):''}${badges(d)}</div></div>`).join('');
+  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Idées de recettes"><div class="plate" style="--tile:var(--cL)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">💡</span></div><div class="mb"><h2>${I.mode==='fridge'?'Recettes avec mon frigo':'Idées de recettes'}</h2><p class="note" style="margin:0">${I.mode==='fridge'?'Composées uniquement avec ce que tu as en stock (hors sel, poivre et huile).':'Des assemblages nouveaux, tirés au sort parmi plusieurs centaines.'}</p>${rows||`<p>${I.mode==='fridge'?'Rien à composer pour le moment : ajoute des féculents, légumes ou protéines au frigo.':'Aucune idée disponible.'}</p>`}<div class="row"><button class="btn" data-act="ideasopen" data-v="${I.mode}">🎲 Autres idées</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div></div></div></div>`;
+}
+function viewPlaceSheet(){
+  const pl=S.plans[S.week], mode=pl?pl.mode:S.set.mode, n=slotCount(mode), d=dishById(S.pl);
+  const btns=Array.from({length:n},(_,j)=>{ const s=pl&&pl.slots[j], x=s?dishById(s.id):null; return `<button class="opt" style="display:block;width:100%;text-align:left;margin:4px 0" data-act="plto" data-i="${j}">${esc(slotLabel(mode,j))} · ${x?esc(x.e+' '+x.name):'Repas libre'}</button>`; }).join('');
+  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Mettre dans la semaine"><div class="plate" style="--tile:var(--cF)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">${d?d.e:'📅'}</span></div><div class="mb"><h2>Mettre dans la semaine</h2><p class="note" style="margin:0">« ${d?esc(d.name):''} » remplacera le repas du jour choisi.</p>${btns}<div class="row"><button class="btn ghost" data-act="sheetclose">Annuler</button></div></div></div></div>`;
 }
 function surprise(){
   const rnd = a=>a[Math.floor(Math.random()*a.length)];
@@ -1200,14 +1276,15 @@ function viewReceiptSheet(){
     const nOn = rc.rows.filter(r=>r.on).length, sum = rc.rows.filter(r=>r.on).reduce((a,r)=>a+(r.price||0),0), ib='border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);padding:6px 8px;font:inherit';
     body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Décoche ce qui n'est pas de la nourriture, corrige un nom ou une quantité si besoin.</p><div class="fld"><label for="rc-date">Date des courses</label><input type="date" id="rc-date" value="${esc(rc.date||'')}" style="${ib}"></div>${sum>0?`<p class="note" style="margin:0">Articles cochés : ${fe(sum)}${rc.doc?' · total de la facture : '+fe(rc.doc):''}. Ce montant est ajouté au budget.</p>`:''}
     <div class="row"><button class="btn ghost sm" data-act="rcall" data-v="1">Tout cocher</button><button class="btn ghost sm" data-act="rcall" data-v="0">Tout décocher</button></div>
-    <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div>${(r.size||r.price)?`<div class="note" style="margin:0 0 4px 30px">${[r.size?esc(r.size):'',r.price?fe(r.price):''].filter(Boolean).join(' · ')}</div>`:''}`).join('')}</div>
+    <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div><div style="display:flex;gap:6px;margin:0 0 6px 30px"><input data-rcsize="${i}" value="${esc(r.size||'')}" placeholder="Poids / volume (ex. 500 g, 1 L)" style="flex:1;min-width:0;${ib}" aria-label="Poids ou volume"><input data-rcprice="${i}" inputmode="decimal" value="${r.price?String(r.price).replace('.',','):''}" placeholder="Prix €" style="width:84px;${ib}" aria-label="Prix payé"></div>`).join('')}</div>
+    <div class="row"><button class="btn ghost sm" data-act="rcnew">➕ Ajouter une ligne</button></div>
     <div class="row"><button class="btn" data-act="rcadd" ${nOn?'':'disabled'}>Ajouter ${nOn} article${nOn>1?'s':''} au frigo</button><button class="btn ghost" data-act="rcback">Retour</button></div>`;
   } else {
     body = `<h2>Ajouter des courses</h2><p class="note" style="margin:0">Choisis la facture de ton drive (PDF ou texte) ou colle une liste de courses. Les articles et leurs quantités sont repérés, tu les vérifies, puis ils rejoignent le frigo.</p>
     <div class="row"><label class="btn" style="cursor:pointer">📂 Choisir un fichier<input type="file" id="rc-file" accept=".pdf,.txt,.csv,.html,.htm,application/pdf,text/plain,text/csv,text/html" style="display:none"></label></div>
     <div class="fld"><label for="rc-text">Ou colle le texte / ta liste</label><textarea id="rc-text" rows="6" style="${OB_IN};font:14px/1.4 inherit" placeholder="2 x Lait demi-écrémé 1 L&#10;500 g de riz&#10;6 œufs&#10;Gnocchi frais 500 g">${esc(rc.text)}</textarea></div>
     ${rc.msg?`<p class="note" style="margin:0">${esc(rc.msg)}</p>`:''}
-    <div class="row"><button class="btn" data-act="rcparse">Analyser</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div>
+    <div class="row"><button class="btn" data-act="rcparse">Analyser</button><button class="btn ghost" data-act="rcmanual">✍️ Saisir à la main</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div>
     <p class="note" style="margin:0">Les photos de ticket ne sont pas lues : utilise le PDF de la facture ou recopie la liste.</p>`;
   }
   return head+body+'</div></div></div>';
@@ -1272,7 +1349,7 @@ function viewReadySheet(){
 }
 function viewBudget(){
   const buys=(S.buys||[]).slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-  if(!buys.length) return `<div class="empty"><div class="e">💶</div><h2>Pas encore de dépenses</h2><p>Ajoute une facture de drive depuis l'onglet Frigo (🧾) : les prix des articles alimentent ce budget.</p><button class="btn" data-act="tab" data-v="fridge">Aller au frigo</button></div>`;
+  if(!buys.length) return `<div class="empty"><div class="e">💶</div><h2>Pas encore de dépenses</h2><p>Ajoute une facture de drive depuis l'onglet Frigo (🧾) : les prix des articles alimentent ce budget.</p><button class="btn" data-act="rcmanual">✍️ Saisir mes courses</button> <button class="btn ghost" data-act="tab" data-v="fridge">Aller au frigo</button></div>`;
   const tot=b=>b.items.reduce((a,x)=>a+(x.price||0),0), mon=b=>b.date.slice(0,7);
   const shift=(k,d)=>{ const [y,m]=k.split('-').map(Number), x=new Date(y,m-1+d,1); return x.getFullYear()+'-'+pad(x.getMonth()+1); };
   const lab=k=>new Date(+k.slice(0,4),+k.slice(5)-1,1).toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
@@ -1287,7 +1364,8 @@ function viewBudget(){
   const top=Object.keys(byI).sort((a,b)=>byI[b]-byI[a]).slice(0,8).map(n=>`<li>${esc(n)} <b>${fe(byI[n])}</b></li>`).join('');
   const bud=S.bud||0, pct=bud?Math.min(100,cur/bud*100):0, diff=prv?(cur-prv)/prv*100:null;
   const card='background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:14px';
-  return `<div class="weekbar"><button class="ib" data-act="bmprev" aria-label="Mois précédent">‹</button><div class="wlabel" style="flex:1;text-align:center">${esc(lab(cm))}</div><button class="ib" data-act="bmnext" aria-label="Mois suivant">›</button></div>
+  return `<div class="row" style="margin-bottom:10px"><button class="btn sm" data-act="rcmanual">➕ Saisir des courses</button></div>
+  <div class="weekbar"><button class="ib" data-act="bmprev" aria-label="Mois précédent">‹</button><div class="wlabel" style="flex:1;text-align:center">${esc(lab(cm))}</div><button class="ib" data-act="bmnext" aria-label="Mois suivant">›</button></div>
   <div style="${card}"><h3 style="font-size:30px">${fe(cur)}</h3><p class="note" style="margin:4px 0 0">${buys.filter(b=>mon(b)===cm).length} facture(s) · environ ${fe(cur/weeks)} par semaine${diff===null?'':` · ${diff>=0?'+':''}${Math.round(diff)} % vs mois précédent`}</p>
   <div class="fld" style="margin-top:10px"><label for="bud-in">Budget mensuel visé (€)</label><input id="bud-in" type="number" inputmode="decimal" min="0" value="${bud||''}" style="${OB_IN}"></div>${bud?`<div style="height:10px;border-radius:6px;background:var(--soft);margin-top:8px"><div style="height:10px;border-radius:6px;width:${pct}%;background:${cur>bud?'var(--warn)':'var(--leaf)'}"></div></div><p class="note" style="margin:4px 0 0">${cur>bud?'Dépassé de '+fe(cur-bud):'Il reste '+fe(bud-cur)}</p>`:''}</div>
   <div style="${card}"><h3 style="font-size:18px;margin-bottom:6px">Évolution sur 12 mois</h3>${chart}</div>
@@ -1296,13 +1374,13 @@ function viewBudget(){
   <div style="${card}"><h3 style="font-size:18px">Articles les plus chers</h3><ul style="margin:8px 0 0;padding-left:18px">${top||'<li>Rien sur cette période.</li>'}</ul></div>
   <div style="${card}"><h3 style="font-size:18px">Factures</h3><ul style="list-style:none;margin:8px 0 0;padding:0">${buys.slice().reverse().map(b=>`<li style="display:flex;gap:8px;align-items:center;padding:4px 0"><span style="flex:1">${esc(new Date(b.date+'T12:00:00').toLocaleDateString('fr-FR'))} · ${b.items.length} article${b.items.length>1?'s':''} · <b>${fe(tot(b))}</b></span><button class="opt" data-act="budel" data-id="${b.id}" aria-label="Supprimer cette facture">🗑️</button></li>`).join('')}</ul></div>`;
 }
-document.addEventListener('input', e=>{ const t=e.target; if(t.id==='rc-date' && S.rc) S.rc.date=t.value; if(t.id==='ni-name'){ const u=document.getElementById('ni-unit'); if(u && !u.dataset.t) u.value=unitOf(t.value); } });
+document.addEventListener('input', e=>{ const t=e.target; if(S.rc && t.dataset){ if(t.dataset.rcsize!==undefined){ const r=S.rc.rows[+t.dataset.rcsize]; if(r) r.size=t.value; } if(t.dataset.rcprice!==undefined){ const r=S.rc.rows[+t.dataset.rcprice]; if(r) r.price=Math.max(0,parseFloat(String(t.value).replace(',','.'))||0); } } if(t.id==='rc-date' && S.rc) S.rc.date=t.value; if(t.id==='ni-name'){ const u=document.getElementById('ni-unit'); if(u && !u.dataset.t) u.value=unitOf(t.value); } });
 document.addEventListener('change', e=>{ const t=e.target; if(t.id==='ni-unit') t.dataset.t='1'; if(t.id==='fe-unit'){ const st=document.getElementById('fe-step'); if(st) st.value=UNIT_S[t.value]; } if(t.id==='bud-in'){ S.bud=Math.max(0,parseFloat(t.value)||0); save(); render(); } });
 /* ===== Déplacer un repas, ajouter / modifier une recette ===== */
 var ORIG = {};
 const snapDish = d => ({name:d.name,e:d.e,st:d.st,ing:(d.ing||[]).slice(),steps:(d.steps||[]).slice(),t:d.t,ap:(d.ap||[]).slice()});
 function applyEdits(){
-  Object.keys(S.edits||{}).forEach(id=>{ const d=BASE.find(x=>x.id===id)||DISC.find(x=>x.id===id); if(d){ if(!ORIG[id]) ORIG[id]=snapDish(d); Object.assign(d,S.edits[id]); } });
+  Object.keys(S.edits||{}).forEach(id=>{ const d=BASE.find(x=>x.id===id)||DISC.find(x=>x.id===id)||GENM[id]; if(d){ if(!ORIG[id]) ORIG[id]=snapDish(d); Object.assign(d,S.edits[id]); } });
   CATM=null;
 }
 function slotField(id){
@@ -1450,7 +1528,7 @@ function viewDishes(){
   const own = allOwn(), f = profile();
   const top = Object.keys(f).sort((a,b)=>f[b]-f[a]).slice(0,8);
   const okF = d=>(S.filter==='all'||d.st===S.filter) && (S.apf==='all'||(d.ap||[]).includes(S.apf)) && (!S.nf||S.nf==='all'||nutTags(d).cal===S.nf) && (!S.pf||S.pf==='all'||nutTags(d).pro===S.pf) && (!S.seasonOnly||inSeason(d,curMonth())===true);
-  let h = `<div class="row" style="margin-bottom:8px"><button class="btn sm" data-act="deopen" data-id="">➕ Ma recette</button> <button class="btn sm" data-act="rdopen">🥡 Ajouter un plat tout prêt (pastabox, ravioles…)</button></div><h2 class="sec" style="margin-top:6px">Ce que j'ai repéré dans tes goûts</h2>
+  let h = `<div class="row" style="margin-bottom:8px"><button class="btn sm" data-act="deopen" data-id="">➕ Ma recette</button> <button class="btn sm" data-act="ideasopen" data-v="any">🎲 Idées de recettes</button> <button class="btn sm" data-act="rdopen">🥡 Ajouter un plat tout prêt (pastabox, ravioles…)</button></div><h2 class="sec" style="margin-top:6px">Ce que j'ai repéré dans tes goûts</h2>
     <p class="lead">D'après ta liste, tes ♥ et les nouveautés validées. C'est ce que je privilégie pour les suggestions.</p>
     <div class="taste">${top.map(t=>`<span class="chip">${esc(TAGLAB[t])}</span>`).join('')}</div>
     <p class="note">${banList().length?'Jamais proposé : '+esc(banList().join(', '))+'.':''}</p>`;
@@ -1673,7 +1751,7 @@ function viewFridgeMain(){
     ${fridgeCard(stock,total,mood)}<div class="fr-add"><input id="fr-in" list="fr-list" placeholder="Un ingrédient : poulet, tomates, crème…" aria-label="Ajouter un ingrédient au frigo" autocomplete="off" enterkeyhint="done">
     <datalist id="fr-list">${[...cat.values()].map(c=>c.n).sort((a,b)=>a.localeCompare(b,'fr')).map(n=>`<option value="${esc(n)}"></option>`).join('')}</datalist>
     <button class="plus" data-act="fradd" aria-label="Ajouter au frigo">+</button></div>
-    <div class="row" style="margin:8px 0"><button class="btn ghost sm" data-act="rcopen">🧾 Ajouter une facture de drive ou une liste de courses</button></div>
+    <div class="row" style="margin:8px 0"><button class="btn ghost sm" data-act="rcopen">🧾 Ajouter des courses</button><button class="btn ghost sm" data-act="rcmanual">✍️ Saisir à la main</button><button class="btn ghost sm" data-act="ideasopen" data-v="fridge">💡 Recettes avec mon frigo</button></div>
     <div class="row" style="margin-bottom:14px"><button class="btn ghost sm" data-act="newing">✨ Créer un nouvel ingrédient</button></div>`;
   if(!total){
     h += `<div class="fr-empty"><div class="big">🥕 🧀 🍗 🥚</div><h3>Rien ici pour l'instant</h3><p>Après les courses, ajoute ce que tu as rangé : tape un nom ci-dessus, ou pioche dans le catalogue en bas de page.</p></div>`;
@@ -1787,6 +1865,8 @@ function viewSheet(){
   if(S.sheet==='sync') return viewSyncSheet();
   if(S.sheet==='receipt') return viewReceiptSheet();
   if(S.sheet==='mv') return viewMvSheet();
+  if(S.sheet==='ideas') return viewIdeasSheet();
+  if(S.sheet==='place') return viewPlaceSheet();
   if(S.sheet==='dedit') return viewDeditSheet();
   if(S.sheet==='ready') return viewReadySheet();
   if(S.sheet==='fedit') return viewFeditSheet();
@@ -1831,7 +1911,7 @@ function viewModal(){
     <div class="plate" ${tile(d.st)}><button class="closeb" data-act="close" aria-label="Fermer">✕</button><span class="e">${d.e}</span></div>
     <div class="mb"><h2>${esc(d.name)}</h2><div class="chips">${badges(d,false)}</div>
     ${(d.ap&&d.ap.length)?`<div><h4>Appareils</h4><div class="chips">${apChips(d)}</div></div>`:`<div class="note">Aucun appareil nécessaire.</div>`}
-    <div class="row"><button class="btn ghost sm" data-act="deopen" data-id="${d.id}">✏️ Modifier la recette</button></div>${ppBox(d)}<div><h4>Ingrédients pour ${ppOf(d.id)}</h4>${d.ing.length&&(!d.ready||d.kcal)?`<div class="note">Estimation : ~${dishNut(d).k} kcal et ~${dishNut(d).p} g de protéines par personne</div>`:''}<ul>${d.ing.map(x=>`<li>${esc(x)}${d.ready?'':qtyTxt(x,ppOf(d.id))} <span class="note">· ${nutOf(x)[1]} kcal/100 g</span>${fridgeCount()?(have(x)?' ✅':' <span class="note">à acheter</span>'):''}</li>`).join('')}</ul></div>
+    <div class="row">${d.gen&&!S.adopted[d.id]?`<button class="btn ghost sm" data-act="ideaadd" data-id="${d.id}">➕ Ajouter à mes plats</button>`:''}${d.gen?`<button class="btn ghost sm" data-act="ideaplace" data-id="${d.id}">📅 Mettre dans la semaine</button>`:''}<button class="btn ghost sm" data-act="deopen" data-id="${d.id}">✏️ Modifier la recette</button></div>${ppBox(d)}<div><h4>Ingrédients pour ${ppOf(d.id)}</h4>${d.ing.length&&(!d.ready||d.kcal)?`<div class="note">Estimation : ~${dishNut(d).k} kcal et ~${dishNut(d).p} g de protéines par personne</div>`:''}<ul>${d.ing.map(x=>`<li>${esc(x)}${d.ready?'':qtyTxt(x,ppOf(d.id))} <span class="note">· ${nutOf(x)[1]} kcal/100 g</span>${fridgeCount()?(have(x)?' ✅':' <span class="note">à acheter</span>'):''}</li>`).join('')}</ul></div>
     ${adaptBox(d)}
     ${d.steps&&d.steps.length?`<div><h4>Préparation</h4><ol>${d.steps.map(s=>`<li>${esc(scaleSteps(s,ppOf(d.id)/2))}</li>`).join('')}</ol>${ppOf(d.id)>4?'<div class="note">Pour de grandes quantités, cuis en plusieurs fournées et prévois des temps de cuisson un peu plus longs.</div>':''}</div>`:`<div class="note">Pas de recette détaillée pour ce plat.</div>`}
     ${seasonTxt?`<div class="note">Saison : ${seasonTxt}.</div>`:''}
@@ -2029,14 +2109,14 @@ function p2pSend(now){
 function p2pTouch(){
   if(!S.link) return;
   S.ts=S.ts||{}; const hs=P2P.hs; let ch=false;
-  P2C.forEach(c=>{ const h=J(S[c]===undefined?null:S[c]); if(hs[c]!==h){ if(hs[c]!==undefined && !P2P.applying){ S.ts[c]=Date.now(); ch=true; } hs[c]=h; } });
+  P2C.forEach(c=>{ const h=J(S[c]===undefined?null:S[c]); if(hs[c]!==h){ if(hs[c]!==undefined && !P2P.applying){ S.ts[c]=Math.max(Date.now(),(S.ts[c]||0)+1); ch=true; } hs[c]=h; } });
   const vh=J(S.votes); if(hs.votes!==vh){ if(hs.votes!==undefined && !P2P.applying) ch=true; hs.votes=vh; }
   if(ch) p2pSend();
 }
 function p2pRecv(m){
   if(!m || m.t!=='state' || !m.d || !S.link) return;
   const d=m.d, rs=S.who==='a'?'l':'a';
-  S.ts=S.ts||{}; P2P.applying=true;
+  S.ts=S.ts||{}; P2P.applying=true; let ahead=false;
   try{
     P2C.forEach(c=>{
       if(d[c]!==undefined && ((d.ts||{})[c]||0)>(S.ts[c]||0)){
@@ -2045,17 +2125,20 @@ function p2pRecv(m){
       }
     });
     Object.keys(d.votes||{}).forEach(id=>{ const cur=S.votes[id]||{a:0,l:0}; cur[rs]=(d.votes[id]||{})[rs]||0; S.votes[id]=cur; });
+    ahead = P2C.some(c=>(S.ts[c]||0)>((d.ts||{})[c]||0)) || Object.keys(S.votes).some(id=>((S.votes[id]||{})[S.who])!==(((d.votes||{})[id]||{})[S.who]));
     Object.keys(S.votes).forEach(id=>{ if(vstatus(id)==='ok') adopt(id); });
     if(S.profile && S.profile.done) P2P.joining=false;
     applyEdits(); saveLocal();
   } finally { P2P.applying=false; }
+  P2P.last=Date.now(); if(ahead) p2pSend(true);
   scheduleRender();
 }
 function p2pAttach(c){
   if(P2P.conn && P2P.conn!==c){ try{ P2P.conn.close(); }catch(e){} }
-  P2P.conn=c; P2P.live=true;
+  P2P.conn=c; P2P.live=true; P2P.err='';
+  clearInterval(P2P.hb); P2P.hb=setInterval(()=>{ if(P2P.conn && P2P.conn.open) p2pSend(true); },20000);
   c.on('data',p2pRecv);
-  c.on('close',()=>{ if(P2P.conn===c){ P2P.conn=null; P2P.live=false; scheduleRender(); setTimeout(p2pDial,4000); } });
+  c.on('close',()=>{ if(P2P.conn===c){ P2P.conn=null; P2P.live=false; clearInterval(P2P.hb); scheduleRender(); setTimeout(p2pDial,4000); } });
   c.on('error',()=>{});
   p2pSend(true); scheduleRender();
 }
@@ -2069,7 +2152,7 @@ function p2pDial(){
 }
 function p2pStart(){
   const L=S.link; if(!L || !window.Peer || P2P.peer) return;
-  const pr=new Peer(L.me,{debug:0}); P2P.peer=pr;
+  const pr=new Peer(L.me,{debug:0,config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},{urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turn:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]}}); P2P.peer=pr;
   pr.on('open',()=>{ P2P.up=true; if(L.role==='guest') p2pDial(); scheduleRender(); });
   pr.on('connection',c=>{
     if(L.role!=='host') return;
@@ -2077,8 +2160,11 @@ function p2pStart(){
   });
   pr.on('disconnected',()=>{ try{ pr.reconnect(); }catch(e){} });
   pr.on('error',e=>{
-    if(e && e.type==='unavailable-id'){ p2pStop(); setTimeout(p2pStart,4000); }
+    const ty=(e&&e.type)||'';
+    P2P.err = ty==='peer-unavailable' ? "L'autre appli n'est pas ouverte (ou injoignable pour l'instant)." : ty==='unavailable-id' ? "Cet identifiant est encore utilisé : patiente quelques secondes ou ferme l'autre onglet." : /network|server|socket/.test(ty) ? "Le serveur de mise en relation est injoignable : vérifie la connexion internet." : 'Erreur de liaison ('+ty+').';
+    if(ty==='unavailable-id'){ p2pStop(); setTimeout(p2pStart,4000); }
     else if(L.role==='guest'){ setTimeout(p2pDial,8000); }
+    scheduleRender();
   });
 }
 function p2pStop(){
@@ -2096,6 +2182,7 @@ function p2pInit(){
     saveLocal();
   }
   if(S.link){ S.who=S.link.slot; if(S.link.role==='guest' && !(S.profile&&S.profile.done)) P2P.joining=true; p2pStart(); }
+  window.addEventListener('pagehide',()=>{ try{ if(P2P.peer) P2P.peer.destroy(); }catch(e){} });
   document.addEventListener('visibilitychange',()=>{
     if(document.hidden || !S.link) return;
     try{ if(P2P.peer && P2P.peer.disconnected) P2P.peer.reconnect(); }catch(e){}
@@ -2109,10 +2196,11 @@ function viewP2PSheet(){
   else if(!L) body='<p style="margin:0">Lie ton appli à celle de l\'autre personne : vous partagez les mêmes plats, la même semaine, le frigo, et vous votez chacun depuis votre téléphone.</p><div class="row"><button class="btn" data-act="p2pinv">Créer une invitation</button></div>';
   else if(L.role==='host') body=`<p style="margin:0">${P2P.live?'🟢 L\'autre personne est connectée.':'⏳ En attente de l\'autre personne.'}</p><p class="note" style="margin:0">Envoie-lui ce lien : en l\'ouvrant, son appli se lie à la tienne. Garde l\'appli ouverte au moment où elle rejoint. Le lien est personnel : ne l\'envoie qu\'à elle.</p><div class="row"><button class="btn" data-act="p2pshare">${navigator.share?'Envoyer l\'invitation':'Copier le lien'}</button></div><div class="row"><button class="btn ghost sm" data-act="p2punlink">Délier</button></div>`;
   else body=`<p style="margin:0">${P2P.live?'🟢 Lié à l\'appli de l\'autre personne.':'⏳ En attente de la connexion avec l\'autre personne (elle doit avoir l\'appli ouverte).'}</p><div class="row"><button class="btn ghost sm" data-act="p2punlink">Délier</button></div>`;
+  const diag = L ? `${P2P.err&&!P2P.live?`<p class="note" style="margin:0">⚠️ ${esc(P2P.err)}</p>`:''}<p class="note" style="margin:0">${P2P.last?'Dernière synchro reçue : '+new Date(P2P.last).toLocaleTimeString('fr-FR'):'Aucune synchro reçue pour l\'instant.'}</p><div class="row"><button class="btn ghost sm" data-act="p2pretry">🔄 Reconnecter</button>${P2P.live?'<button class="btn ghost sm" data-act="p2psync">⇅ Synchroniser maintenant</button>':''}</div>` : '';
   const who = L ? `<p style="margin:0">Tu es ${esc(((S.profile&&S.profile.slotNames)||{})[S.who]||'toi')}.</p>` : '';
   return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Liaison">
     <div class="plate" style="--tile:var(--cC)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">🔗</span></div>
-    <div class="mb"><h2>Lier les deux applis</h2>${who}${body}
+    <div class="mb"><h2>Lier les deux applis</h2>${who}${body}${diag}
     <p class="note" style="margin:0">Les données sont stockées sur chaque téléphone et se synchronisent quand vous avez l'appli ouverte en même temps.</p>
     <div class="row"><button class="btn" data-act="sheetclose">Fermer</button></div></div></div></div>`;
 }
@@ -2202,7 +2290,14 @@ document.addEventListener('click', e=>{
   else if(a==='nf'){ S.nf=v; }
   else if(a==='mvopen'){ S.mv=i; S.sheet='mv'; S.focusModal=true; }
   else if(a==='mvto'){ const pl=S.plans[S.week]; if(pl && S.mv!=null && i!==S.mv){ const x=pl.slots[S.mv]; pl.slots[S.mv]=pl.slots[i]; pl.slots[i]=x; save(); toast('Repas déplacé'); } S.sheet=null; S.mv=null; }
-  else if(a==='deopen'){ S.de={id:id||null}; S.sheet='dedit'; S.open=null; S.focusModal=true; }
+  else if(a==='deopen'){ let did=id||null; if(did && IDEAS[did]){ did=ideaToCustom(IDEAS[did]).id; save(); } S.de={id:did}; S.sheet='dedit'; S.open=null; S.focusModal=true; }
+  else if(a==='ideasopen'){ const m=v||'any'; const L=m==='fridge'?fridgeIdeas(8):wsample(GEN.filter(d=>!S.adopted[d.id] && !excludedBy(d).length),8); S.ideas={mode:m,list:L.map(d=>d.id)}; S.sheet='ideas'; S.open=null; S.focusModal=true; }
+  else if(a==='ideaopen'){ S.sheet=null; S.open=id; S.focusModal=true; }
+  else if(a==='ideaadd'){ if(IDEAS[id]) ideaToCustom(IDEAS[id]); else S.adopted[id]=true; S.open=null; save(); toast('Ajouté à tes plats'); }
+  else if(a==='ideaplace'){ S.pl=id; S.sheet='place'; S.open=null; S.focusModal=true; }
+  else if(a==='plto'){ let pid=S.pl; if(pid && IDEAS[pid]) pid=ideaToCustom(IDEAS[pid]).id; if(pid){ if(!S.plans[S.week]){ S.plans[S.week]={mode:S.set.mode,slots:Array.from({length:slotCount(S.set.mode)},()=>null)}; } S.plans[S.week].slots[i]={id:pid,lock:true}; save(); toast('Ajouté à la semaine'); } S.sheet=null; S.pl=null; }
+  else if(a==='p2pretry'){ P2P.err=''; p2pStop(); p2pStart(); }
+  else if(a==='p2psync'){ p2pSend(true); toast('Synchronisation envoyée'); }
   else if(a==='desave'){
     const g=x=>document.getElementById(x), nm=(g('de-name').value||'').trim(), ln=x=>(g(x).value||'').split(/\n/).map(y=>y.trim()).filter(Boolean);
     const f={name:nm,e:(g('de-emoji').value||'').trim()||'🍽️',st:g('de-st').value,ing:ln('de-ing'),steps:ln('de-steps'),t:+g('de-t').value||0,ap:[...document.querySelectorAll('[data-deap]:checked')].map(x=>x.dataset.deap)};
@@ -2246,6 +2341,8 @@ document.addEventListener('click', e=>{
     CATM=null; S.sheet=null; save(); toast(nm+(j>=0?' ajouté à la semaine':' ajouté à tes plats'));
   }
   else if(a==='rcopen'){ S.rc={stage:'in',text:'',rows:[],msg:''}; S.sheet='receipt'; S.open=null; S.focusModal=true; }
+  else if(a==='rcmanual'){ S.rc={stage:'review',text:'',rows:[{on:true,name:'',e:'🧺',q:1,size:'',price:0,raw:''}],msg:'',date:iso(new Date()),doc:0}; S.sheet='receipt'; S.open=null; S.focusModal=true; }
+  else if(a==='rcnew'){ S.rc.rows.push({on:true,name:'',e:'🧺',q:1,size:'',price:0,raw:''}); }
   else if(a==='rcparse'){ const ta=document.getElementById('rc-text'); if(ta) S.rc.text=ta.value; rcRun(); }
   else if(a==='rctog'){ const r=S.rc.rows[i]; if(r) r.on=!r.on; }
   else if(a==='rcqty'){ const r=S.rc.rows[i]; if(r) r.q=Math.max(1,Math.min(99,r.q+(+v))); }
@@ -2255,7 +2352,8 @@ document.addEventListener('click', e=>{
     let n=0; const items=[];
     S.rc.rows.forEach(r=>{
       const name=(r.name||'').trim(); if(!r.on || !name) return;
-      const k=keyOf(name);
+      let k=keyOf(name);
+      if(!catalog().has(k)){ const mm=rcMatch(name); if(mm) k=mm.k; }
       if(!catalog().has(k)){ const it={id:'i'+Date.now()+'_'+n,name,e:r.e||'🧺',type:'autre',sub:''}; S.myIng.push(it); applyMyIng(it); CATM=null; }
       const sz=rcSize(r.size); if(sz) stockAmt(k,sz.amt*r.q,sz.unit); else stockAdd(k,r.q*packOf(k));
       if(r.price>0){ const c=catalog().get(k); items.push({n:name,e:r.e,r:c?c.r:guessRayon(name),q:r.q,price:r.price}); }
