@@ -307,7 +307,7 @@ button,select,summary{touch-action:manipulation;-webkit-tap-highlight-color:tran
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 /* ================= Liaison indépendante (hors Claude) : état ================= */
-var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false, err:'', last:0, hb:null};
+var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false, err:'', last:0, hb:null, ice:'', sto:null};
 const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud','upref','edits'];
 /* ================= Données ================= */
 const KEY = 'carnet-menus-v1';
@@ -1375,7 +1375,7 @@ function viewBudget(){
   <div style="${card}"><h3 style="font-size:18px">Factures</h3><ul style="list-style:none;margin:8px 0 0;padding:0">${buys.slice().reverse().map(b=>`<li style="display:flex;gap:8px;align-items:center;padding:4px 0"><span style="flex:1">${esc(new Date(b.date+'T12:00:00').toLocaleDateString('fr-FR'))} · ${b.items.length} article${b.items.length>1?'s':''} · <b>${fe(tot(b))}</b></span><button class="opt" data-act="budel" data-id="${b.id}" aria-label="Supprimer cette facture">🗑️</button></li>`).join('')}</ul></div>`;
 }
 document.addEventListener('input', e=>{ const t=e.target; if(S.rc && t.dataset){ if(t.dataset.rcsize!==undefined){ const r=S.rc.rows[+t.dataset.rcsize]; if(r) r.size=t.value; } if(t.dataset.rcprice!==undefined){ const r=S.rc.rows[+t.dataset.rcprice]; if(r) r.price=Math.max(0,parseFloat(String(t.value).replace(',','.'))||0); } } if(t.id==='rc-date' && S.rc) S.rc.date=t.value; if(t.id==='ni-name'){ const u=document.getElementById('ni-unit'); if(u && !u.dataset.t) u.value=unitOf(t.value); } });
-document.addEventListener('change', e=>{ const t=e.target; if(t.id==='ni-unit') t.dataset.t='1'; if(t.id==='fe-unit'){ const st=document.getElementById('fe-step'); if(st) st.value=UNIT_S[t.value]; } if(t.id==='bud-in'){ S.bud=Math.max(0,parseFloat(t.value)||0); save(); render(); } });
+document.addEventListener('change', e=>{ const t=e.target; if(t.id==='sync-file' && t.files && t.files[0]){ t.files[0].text().then(tx=>{ try{ const m=JSON.parse(tx); if(m.slot && m.slot===S.who){ toast('Ce fichier vient de ton propre téléphone'); return; } p2pRecv(m); toast('Données fusionnées'); }catch(err){ toast('Fichier illisible'); } }); t.value=''; } if(t.id==='ni-unit') t.dataset.t='1'; if(t.id==='fe-unit'){ const st=document.getElementById('fe-step'); if(st) st.value=UNIT_S[t.value]; } if(t.id==='bud-in'){ S.bud=Math.max(0,parseFloat(t.value)||0); save(); render(); } });
 /* ===== Déplacer un repas, ajouter / modifier une recette ===== */
 var ORIG = {};
 const snapDish = d => ({name:d.name,e:d.e,st:d.st,ing:(d.ing||[]).slice(),steps:(d.steps||[]).slice(),t:d.t,ap:(d.ap||[]).slice()});
@@ -2148,14 +2148,19 @@ function p2pDial(){
   clearTimeout(P2P.dt); P2P.dt=setTimeout(p2pDial,10000);
   const c=P2P.peer.connect(L.peer,{serialization:'json',reliable:true});
   c.on('open',()=>{ c.send({t:'hello',k:L.token}); p2pAttach(c); });
-  c.on('error',()=>{});
+  c.on('iceStateChanged',s=>{ P2P.ice=s; scheduleRender(); });
+  c.on('error',e=>{ P2P.err='Liaison directe impossible ('+((e&&e.type)||'erreur')+').'; scheduleRender(); });
+  setTimeout(()=>{ if(!(P2P.conn&&P2P.conn.open) && P2P.up){ P2P.err=P2P.err||"La connexion directe n'aboutit pas. Les deux téléphones ont-ils l'appli ouverte ? Sinon, utilise la synchro par fichier ci-dessous."; scheduleRender(); } },15000);
 }
 function p2pStart(){
   const L=S.link; if(!L || !window.Peer || P2P.peer) return;
   const pr=new Peer(L.me,{debug:0,config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},{urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turn:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]}}); P2P.peer=pr;
-  pr.on('open',()=>{ P2P.up=true; if(L.role==='guest') p2pDial(); scheduleRender(); });
+  clearTimeout(P2P.sto); P2P.sto=setTimeout(()=>{ if(!P2P.up){ P2P.err='Le serveur de mise en relation ne répond pas. Essaie « Reconnecter », ou change de connexion (Wi-Fi / 4G).'; scheduleRender(); } },10000);
+  pr.on('open',()=>{ P2P.up=true; clearTimeout(P2P.sto); P2P.err=''; if(L.role==='guest') p2pDial(); scheduleRender(); });
   pr.on('connection',c=>{
     if(L.role!=='host') return;
+    c.on('iceStateChanged',s=>{ P2P.ice=s; scheduleRender(); });
+    c.on('error',e=>{ P2P.err='Liaison directe impossible ('+((e&&e.type)||'erreur')+').'; scheduleRender(); });
     c.on('data',m=>{ if(m && m.t==='hello' && m.k===L.token && !c._ok){ c._ok=true; p2pAttach(c); } });
   });
   pr.on('disconnected',()=>{ try{ pr.reconnect(); }catch(e){} });
@@ -2196,7 +2201,8 @@ function viewP2PSheet(){
   else if(!L) body='<p style="margin:0">Lie ton appli à celle de l\'autre personne : vous partagez les mêmes plats, la même semaine, le frigo, et vous votez chacun depuis votre téléphone.</p><div class="row"><button class="btn" data-act="p2pinv">Créer une invitation</button></div>';
   else if(L.role==='host') body=`<p style="margin:0">${P2P.live?'🟢 L\'autre personne est connectée.':'⏳ En attente de l\'autre personne.'}</p><p class="note" style="margin:0">Envoie-lui ce lien : en l\'ouvrant, son appli se lie à la tienne. Garde l\'appli ouverte au moment où elle rejoint. Le lien est personnel : ne l\'envoie qu\'à elle.</p><div class="row"><button class="btn" data-act="p2pshare">${navigator.share?'Envoyer l\'invitation':'Copier le lien'}</button></div><div class="row"><button class="btn ghost sm" data-act="p2punlink">Délier</button></div>`;
   else body=`<p style="margin:0">${P2P.live?'🟢 Lié à l\'appli de l\'autre personne.':'⏳ En attente de la connexion avec l\'autre personne (elle doit avoir l\'appli ouverte).'}</p><div class="row"><button class="btn ghost sm" data-act="p2punlink">Délier</button></div>`;
-  const diag = L ? `${P2P.err&&!P2P.live?`<p class="note" style="margin:0">⚠️ ${esc(P2P.err)}</p>`:''}<p class="note" style="margin:0">${P2P.last?'Dernière synchro reçue : '+new Date(P2P.last).toLocaleTimeString('fr-FR'):'Aucune synchro reçue pour l\'instant.'}</p><div class="row"><button class="btn ghost sm" data-act="p2pretry">🔄 Reconnecter</button>${P2P.live?'<button class="btn ghost sm" data-act="p2psync">⇅ Synchroniser maintenant</button>':''}</div>` : '';
+  const diag = L ? `${P2P.err&&!P2P.live?`<p class="note" style="margin:0">⚠️ ${esc(P2P.err)}</p>`:''}<p class="note" style="margin:0">Serveur de mise en relation : ${P2P.up?'✅ joignable':'⏳ pas encore de réponse'} · Liaison directe : ${P2P.live?'✅':(P2P.ice?'⏳ '+esc(P2P.ice):'⏳ en attente')}<br>${P2P.last?'Dernière synchro reçue : '+new Date(P2P.last).toLocaleTimeString('fr-FR'):'Aucune synchro reçue pour l\'instant.'}</p><div class="row"><button class="btn ghost sm" data-act="p2pretry">🔄 Reconnecter</button>${P2P.live?'<button class="btn ghost sm" data-act="p2psync">⇅ Synchroniser maintenant</button>':''}</div>
+<h3 style="font-size:16px;margin:10px 0 2px">Synchro par fichier</h3><p class="note" style="margin:0">Si la liaison ne s'établit pas, échangez vos données à la main : l'un envoie son fichier, l'autre le fusionne, puis l'inverse.</p><div class="row"><button class="btn ghost sm" data-act="syncout">📤 Envoyer mes données</button><label class="btn ghost sm" style="cursor:pointer">📥 Fusionner un fichier<input type="file" id="sync-file" accept=".json,application/json,text/plain" style="display:none"></label></div><p class="note" style="margin:0">Astuce : ouvre toujours l'appli dans le même navigateur (Safari ou Chrome), pas dans la fenêtre intégrée d'une messagerie : ses données y sont à part.</p>` : '';
   const who = L ? `<p style="margin:0">Tu es ${esc(((S.profile&&S.profile.slotNames)||{})[S.who]||'toi')}.</p>` : '';
   return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Liaison">
     <div class="plate" style="--tile:var(--cC)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">🔗</span></div>
@@ -2298,6 +2304,7 @@ document.addEventListener('click', e=>{
   else if(a==='plto'){ let pid=S.pl; if(pid && IDEAS[pid]) pid=ideaToCustom(IDEAS[pid]).id; if(pid){ if(!S.plans[S.week]){ S.plans[S.week]={mode:S.set.mode,slots:Array.from({length:slotCount(S.set.mode)},()=>null)}; } S.plans[S.week].slots[i]={id:pid,lock:true}; save(); toast('Ajouté à la semaine'); } S.sheet=null; S.pl=null; }
   else if(a==='p2pretry'){ P2P.err=''; p2pStop(); p2pStart(); }
   else if(a==='p2psync'){ p2pSend(true); toast('Synchronisation envoyée'); }
+  else if(a==='syncout'){ const txt=JSON.stringify({t:'state',d:p2pSnap(),slot:S.who}), f=new File([txt],'carnet-sync.json',{type:'application/json'}); if(navigator.canShare && navigator.canShare({files:[f]})) navigator.share({files:[f],title:'Carnet de menus'}).catch(()=>{}); else { bkDownload(txt); toast('Fichier téléchargé'); } }
   else if(a==='desave'){
     const g=x=>document.getElementById(x), nm=(g('de-name').value||'').trim(), ln=x=>(g(x).value||'').split(/\n/).map(y=>y.trim()).filter(Boolean);
     const f={name:nm,e:(g('de-emoji').value||'').trim()||'🍽️',st:g('de-st').value,ing:ln('de-ing'),steps:ln('de-steps'),t:+g('de-t').value||0,ap:[...document.querySelectorAll('[data-deap]:checked')].map(x=>x.dataset.deap)};
