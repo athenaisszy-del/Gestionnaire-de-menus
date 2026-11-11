@@ -1193,24 +1193,35 @@ function bkApply(txt){ try{ bkImport(JSON.parse(txt)); PROF=null; save(); toast(
 function bkDownload(txt){ try{ const u=URL.createObjectURL(new Blob([txt],{type:'application/json'})), a=document.createElement('a'); a.href=u; a.download='carnet-de-menus-sauvegarde.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),2000); }catch(e){} }
 document.addEventListener('change', e=>{ const f=e.target; if(f && f.id==='bk-file' && f.files && f.files[0]){ f.files[0].text().then(bkApply); f.value=''; } });
 /* ===== Frigo : import d'une facture de drive ou d'une liste de courses ===== */
-const RC_SKIP = /^\W*(sous[- ]?total|total|tva|montant|net a payer|a payer|paye|carte|cb|espece|rendu|remise|economie|fidelite|cagnotte|livraison|frais|service|facture|date|numero|n°|magasin|retrait|client|adresse|merci|tel|siret|ticket|designation|quantite|qte|prix|sac|consigne|emballage|bon de|code|reference|page|commande|article)\b/;
-const RC_PRICE = /(?:\d{1,4}[.,]\d{2}\s*(?:€|eur(?:os?)?)?|(?:€|eur)\s*\d+(?:[.,]\d+)?)/gi;
+const RC_SKIP = /^\W*(sous[- ]?total|total|tva|montant|net a payer|a payer|paye|paiement|carte|cb|visa|mastercard|espece|rendu|remise|economie|fidelite|cagnotte|livraison|frais|service|facture|date|numero|n°|magasin|retrait|creneau|horaire|heure|client|adresse|rue|avenue|boulevard|cedex|merci|tel|siret|iban|bic|designation|quantite|qte|prix|sac|consigne|emballage|bon de|code|reference|ref|page|commande|article|ticket|vendeur|conseiller)\b/;
+const RC_PRICE = /(?:\d{1,4}[.,]\d{2}(?!\d)\s*(?:€|eur(?:os?)?)?|(?:€|eur)\s*\d+(?:[.,]\d+)?)/gi;
+const RC_BLACK = /\b(lessive|adoucissant|vaisselle|savon|shampo|gel douche|douche|dentifrice|brosse a|deodorant|papier (toilette|wc|hygien|cuisson|alu)|rouleaux? (toilette|essuie)|essuie|mouchoir|poubelle|sac (congel|plastique|caisse|poubelle|kraft)|sacs? (congel|plastique|caisse|poubelle|kraft)|film (alimentaire|etirable)|aluminium|eponge|serpilliere|lavette|nettoyant|javel|desinfect|detartr|degraiss|insecticide|couche|lingette|coton|serviette|pile|ampoule|bougie|allume|charbon|croquette|patee|litiere|rasoir|maquillage|creme (solaire|visage|mains|corps|jour|nuit)|lait (corporel|demaquillant|solaire)|parfum|stylo|cahier|magazine|journal|cintre|gants?|torchon|lave|capsule lave|tablette lave|sel (lave|regenerant)|produit (menager|entretien|vitre|sol))\b/;
+const RC_FOOD_S = /\b(?:sel|the|eau|ail|riz|vin|mais|pois|jus|pain|thon|ble|oeuf|chou|kiwi|miel|soja|lait|noix|rhum|gin)s?\b/;
+const RC_FOOD_L = /\b(?:yaourt|yogourt|fromage|beurre|creme|croissant|brioche|baguette|biscuit|gateau|cereal|muesli|pate|nouille|semoule|boulgour|quinoa|farine|sucre|huile|vinaigre|sauce|moutarde|mayonnaise|ketchup|conserve|sardine|maquereau|haricot|lentille|tomate|carotte|courgette|aubergine|poivron|concombre|salade|laitue|epinard|poireau|brocoli|champignon|oignon|echalote|pomme|banane|orange|citron|clementine|mandarine|fraise|framboise|raisin|poire|ananas|mangue|melon|peche|abricot|cerise|avocat|legume|fruit|viande|poulet|dinde|boeuf|veau|porc|agneau|canard|jambon|saucisse|saucisson|lardon|bacon|steak|hache|merguez|chorizo|poisson|saumon|cabillaud|colin|truite|crevette|surimi|moule|surgele|glace|sorbet|pizza|quiche|soupe|veloute|plat cuisine|cafe|tisane|infusion|limonade|soda|cola|sirop|biere|cidre|champagne|chocolat|bonbon|confiture|tartiner|compote|cacahuete|noisette|amande|chips|olive|cornichon|houmous|tofu|gnocchi|raviol|lasagne|wrap|tortilla|galette|crepe|gaufre|levure|epice|poivre|persil|basilic|ciboulette|coriandre|menthe|gingembre|curry|paprika|cumin|bouillon|margarine|chantilly|mozzarella|emmental|comte|gruyere|parmesan|camembert|brie|chevre|feta|ricotta|raclette|reblochon|mascarpone|skyr|petit suisse|flan|dessert|cracker|biscotte|porridge|flocon|patate|artichaut|asperge|betterave|celeri|fenouil|navet|radis|potiron|potimarron|butternut|courge|endive|mache|roquette|cresson|rhubarbe|figue|datte|pruneau|coco|nutella|danone|yoplait|fage|activia|lactel|president|babybel|kinder|ferrero|haribo|coca|pepsi|fanta|evian|volvic|vittel|perrier|badoit|cristaline|nescafe|nespresso|lavazza|tropicana|heineken|kronenbourg|lu |bonne maman|panzani|barilla|lustucru|william saurin|knorr|maggi|harrys|jacquet|pasquier|herta|fleury michon|bel|boursin|kiri|vache qui rit|saint moret|philadelphia)/;
 function rcLine(raw){
   let s = String(raw).replace(/\s+/g,' ').trim();
   if(s.length<3 || /@|www\.|https?:/i.test(s) || RC_SKIP.test(String(s).toLowerCase().normalize('NFD').replace(/\p{M}/gu,''))) return null;
-  const pr=[...s.matchAll(RC_PRICE)].map(x=>parseFloat(x[0].replace(/[^\d.,]/g,'').replace(',','.'))).filter(x=>x>0), hadPrice = pr.length>0;
+  let wt = 0;
+  s = s.replace(/\b(\d+[.,]\d{3})\b(?!\s*(?:€|eur))/i, (m,a)=>{ wt=parseFloat(a.replace(',','.')); return ' '; });
+  const pr=[...s.matchAll(RC_PRICE)].map(x=>parseFloat(x[0].replace(/[^\d.,]/g,'').replace(',','.'))).filter(x=>x>0);
   s = s.replace(RC_PRICE,' ').replace(/€/g,' ').replace(/\s+/g,' ').trim();
   if(!/[a-zà-ÿ]{3}/i.test(s)) return null;
-  let q = 1, size = '', m;
+  let q = 1, size = '', m, qFound=false;
   s = s.replace(/\b(?:\d+\s*[x×]\s*)?\d+(?:[.,]\d+)?\s*(?:kg|g|cl|ml|l)\b/gi, mm=>{ if(!size) size=mm.trim(); return ' '; }).replace(/\s+/g,' ').trim();
-  if((m=/^(\d{1,2})\s*[x×]\s*(.+)$/i.exec(s))) { q=+m[1]; s=m[2]; }
-  else if((m=/^(\d{1,2})\s+(.+)$/.exec(s))) { q=+m[1]; s=m[2]; }
-  else if((m=/^(.+?)\s*[x×]\s*(\d{1,2})$/i.exec(s))) { q=+m[2]; s=m[1]; }
-  else if((m=/^(.+?)\s+(\d{1,2})$/.exec(s))) { q=+m[2]; s=m[1]; }
+  if((m=/^(\d{1,2})\s*[x×]\s*(.+)$/i.exec(s))) { q=+m[1]; s=m[2]; qFound=true; }
+  else if((m=/^(\d{1,2})\s+(.+)$/.exec(s))) { q=+m[1]; s=m[2]; qFound=true; }
+  else if((m=/^(.+?)\s*[x×]\s*(\d{1,2})$/i.exec(s))) { q=+m[2]; s=m[1]; qFound=true; }
+  else if((m=/^(.+?)\s+(\d{1,2})$/.exec(s))) { q=+m[2]; s=m[1]; qFound=true; }
   if(q<1 || q>30) q=1;
+  const pk=/(?:^|\s)[x×]\s*(\d{1,2})\b/i.exec(s); if(pk){ q=Math.min(99,q*(+pk[1])); s=s.replace(pk[0],' '); }
+  if(pr.length>=2){
+    const tot=pr[pr.length-1], un=pr[pr.length-2], r=tot/un;
+    if(wt && Math.abs(wt*un-tot)<=0.06+tot*0.01){ size=Math.round(wt*1000)+' g'; q=1; }
+    else if(!qFound && Math.abs(Math.round(r)-r)<0.06 && Math.round(r)>=1 && Math.round(r)<=30) q=Math.round(r);
+  } else if(wt && !size){ size=Math.round(wt*1000)+' g'; }
   s = s.replace(/\b(?:lot|pack)\s*(?:de\s*)?\d+\b/gi,' ').replace(/^[\s\-–•*·✓☐□.)(]+/,'').replace(/^(?:de |du |des |d['’])\s*/i,'').replace(/[\s\-–,;:]+$/,'').replace(/\s+/g,' ').trim();
   if(s.length<2 || !/[a-zà-ÿ]{2}/i.test(s)) return null;
-  return {name:s, q, size, price:pr.length?pr[pr.length-1]:0};
+  return {name:s, q, size, price:pr.length?pr[pr.length-1]:0, hasPrice:pr.length>0};
 }
 function rcMatch(name){
   const L=' '+normI(name)+' ', cat=catalog(); let best=null;
@@ -1219,20 +1230,29 @@ function rcMatch(name){
   Object.keys(SYN).forEach(s=>{ if(L.includes(' '+s+' ')) test(SYN[s]); });
   return best ? cat.get(best) : null;
 }
+function rcFood(name, cat){
+  const n=String(name).toLowerCase().replace(/œ/g,'oe').normalize('NFD').replace(/\p{M}/gu,'');
+  if(RC_BLACK.test(n)) return 'no';
+  if(cat || RC_FOOD_S.test(n) || RC_FOOD_L.test(n)) return 'yes';
+  return 'maybe';
+}
 function rcParse(text){
-  const rows=[], seen={};
-  String(text).split(/\r?\n/).forEach(line=>{
+  const lines=String(text).split(/\r?\n/), hp=l=>new RegExp(RC_PRICE.source,'i').test(l);
+  const inv = lines.filter(hp).length>=3, rows=[], seen={};
+  lines.forEach(line=>{
+    if(inv && !hp(line)) return;
     const parts = (!/\d[.,]\d{2}/.test(line) && /;|,(?=\s|$)/.test(line)) ? line.split(/;|,(?=\s|$)/) : [line];
     parts.forEach(part=>{
       const r=rcLine(part); if(!r) return;
-      const c=rcMatch(r.name);
+      const c=rcMatch(r.name), food=rcFood(r.name,c);
       const nm = c ? c.n : r.name.charAt(0).toUpperCase()+r.name.slice(1).toLowerCase();
-      const e = c ? c.e : RMAP[guessRayon(r.name)].e;
-      const k=keyOf(nm);
+      const e = c ? c.e : RMAP[guessRayon(r.name)].e, k=keyOf(nm);
       if(seen[k]!==undefined){ rows[seen[k]].q=Math.min(99,rows[seen[k]].q+r.q); rows[seen[k]].price+=r.price; return; }
-      seen[k]=rows.length; rows.push({on:true,name:nm,e,q:r.q,size:r.size,price:r.price,raw:String(part).trim()});
+      seen[k]=rows.length; rows.push({on:food==='yes',food,name:nm,e,q:r.q,size:r.size,price:r.price,raw:String(part).trim()});
     });
   });
+  rows.sort((a,b)=>(a.food==='yes'?0:1)-(b.food==='yes'?0:1));
+  const i=rows.findIndex(r=>r.food!=='yes'); if(i>0) rows[i].sep=true;
   return rows;
 }
 function rcHtml(h){
@@ -1275,9 +1295,9 @@ function viewReceiptSheet(){
   let body;
   if(rc.stage==='review'){
     const nOn = rc.rows.filter(r=>r.on).length, sum = rc.rows.filter(r=>r.on).reduce((a,r)=>a+(r.price||0),0), ib='border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);padding:6px 8px;font:inherit';
-    body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Décoche ce qui n'est pas de la nourriture, corrige un nom ou une quantité si besoin.</p><div class="fld"><label for="rc-date">Date des courses</label><input type="date" id="rc-date" value="${esc(rc.date||'')}" style="${ib}"></div>${sum>0?`<p class="note" style="margin:0">Articles cochés : ${fe(sum)}${rc.doc?' · total de la facture : '+fe(rc.doc):''}. Ce montant est ajouté au budget.</p>`:''}
+    body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Seuls les aliments reconnus sont cochés, avec leur quantité et leur prix. Corrige un nom, un poids ou un prix si besoin.</p><div class="fld"><label for="rc-date">Date des courses</label><input type="date" id="rc-date" value="${esc(rc.date||'')}" style="${ib}"></div>${sum>0?`<p class="note" style="margin:0">Articles cochés : ${fe(sum)}${rc.doc?' · total de la facture : '+fe(rc.doc):''}. Ce montant est ajouté au budget.</p>`:''}
     <div class="row"><button class="btn ghost sm" data-act="rcall" data-v="1">Tout cocher</button><button class="btn ghost sm" data-act="rcall" data-v="0">Tout décocher</button></div>
-    <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div><div style="display:flex;gap:6px;margin:0 0 6px 30px"><input data-rcsize="${i}" value="${esc(r.size||'')}" placeholder="Poids / volume (ex. 500 g, 1 L)" style="flex:1;min-width:0;${ib}" aria-label="Poids ou volume"><input data-rcprice="${i}" inputmode="decimal" value="${r.price?String(r.price).replace('.',','):''}" placeholder="Prix €" style="width:84px;${ib}" aria-label="Prix payé"></div>`).join('')}</div>
+    <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`${r.sep?'<p class="note" style="margin:12px 0 2px">Lignes ignorées (non alimentaires ou non reconnues). Coche-les si ce sont bien des aliments :</p>':''}<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div><div style="display:flex;gap:6px;margin:0 0 6px 30px"><input data-rcsize="${i}" value="${esc(r.size||'')}" placeholder="Poids / volume (ex. 500 g, 1 L)" style="flex:1;min-width:0;${ib}" aria-label="Poids ou volume"><input data-rcprice="${i}" inputmode="decimal" value="${r.price?String(r.price).replace('.',','):''}" placeholder="Prix €" style="width:84px;${ib}" aria-label="Prix payé"></div>`).join('')}</div>
     <div class="row"><button class="btn ghost sm" data-act="rcnew">➕ Ajouter une ligne</button></div>
     <div class="row"><button class="btn" data-act="rcadd" ${nOn?'':'disabled'}>Ajouter ${nOn} article${nOn>1?'s':''} au frigo</button><button class="btn ghost" data-act="rcback">Retour</button></div>`;
   } else {
