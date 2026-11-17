@@ -309,7 +309,7 @@ button,select,summary{touch-action:manipulation;-webkit-tap-highlight-color:tran
 /* ================= Liaison indépendante (hors Claude) : état ================= */
 var RELAY = {es:null,ok:0,got:0,err:'',busy:false,hash:'',buf:{},done:{},topic:'',key:null,st:null};
 var P2P = {peer:null, conn:null, up:false, live:false, joining:false, hs:{}, applying:false, err:'', last:0, hb:null, ice:'', sto:null};
-const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud','upref','edits'];
+const P2C = ['plans','prefs','off','adopted','custom','excl','fridge','myIng','checked','set','profile','buys','bud','upref','edits','known'];
 /* ================= Données ================= */
 const KEY = 'carnet-menus-v1';
 const ST = {
@@ -479,10 +479,10 @@ const DISC = DISC_ROWS.map((r,i)=>mk('d'+i,r,'new'));
 DISC.forEach(d=>{ if(!(d.ap||[]).includes('CK') && (/risotto|soupe|velout|potage|curry|chili|bolognaise|ratatouille|mijot|blanquette|dahl|lentille|tajine|couscous|riz|pâtes|gnocchi|mac|lasagne/i.test(d.name) || (d.ing||[]).some(x=>/riz|pâtes|macaroni|spaghetti|boulgour|quinoa|semoule|lentille/i.test(x)))){ d.ap=(d.ap||[]).concat('CK'); } });
 
 /* ================= État ================= */
-let S = {tab:'week', plans:{}, prefs:{}, off:{}, adopted:{}, custom:[], votes:{}, excl:{}, fridge:{}, myIng:[], checked:{}, set:{mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true}};
+let S = {tab:'week', plans:{}, prefs:{}, off:{}, adopted:{}, custom:[], votes:{}, excl:{}, fridge:{}, myIng:[], checked:{}, set:{mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true,cheap:false,maxpp:2}};
 try{
   const raw = localStorage.getItem(KEY);
-  if(raw){ const o = JSON.parse(raw); Object.assign(S, o); S.set = Object.assign({mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true}, o.set||{}); S.votes = o.votes||{}; S.excl = o.excl||{}; S.fridge = o.fridge||{}; S.myIng = Array.isArray(o.myIng)?o.myIng:[]; }
+  if(raw){ const o = JSON.parse(raw); Object.assign(S, o); S.set = Object.assign({mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true,cheap:false,maxpp:2}, o.set||{}); S.votes = o.votes||{}; S.excl = o.excl||{}; S.fridge = o.fridge||{}; S.myIng = Array.isArray(o.myIng)?o.myIng:[]; }
 }catch(e){}
 Object.assign(S, {tab:'week', filter:'all', apf:'all', seasonOnly:false, shop:false, fsub:'fridge', cmode:'week', cm:null, open:null, sm:null, focusModal:false, edit:false, who:null, hh:{}, names:{}, sheet:null, cookId:null, pop:null, newName:''});
 let PROF = null;
@@ -490,7 +490,7 @@ let CATM = null;
 function save(){ saveLocal(); pushDiff(); }
 function saveLocal(){
   PROF = null; CATM = null; p2pTouch();
-  try{ localStorage.setItem(KEY, JSON.stringify({plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref,edits:S.edits}, (k,v)=>k==='_v'?undefined:v)); }catch(e){}
+  try{ localStorage.setItem(KEY, JSON.stringify({plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref,edits:S.edits,sim:S.sim,known:S.known}, (k,v)=>k==='_v'?undefined:v)); }catch(e){}
 }
 
 /* ================= Dates & saisons ================= */
@@ -641,6 +641,8 @@ function weight(d){
   if(S.set.season){ const s = inSeason(d,curMonth()); if(s===true) w*=1.6; else if(s===false) w*=.3; }
   if(S.set.air && d.ap && d.ap.includes('AF')) w*=1.35;
   if(S.set.cook && d.ap && d.ap.includes('CK')) w*=1.8;
+  if(d.simple) w*=1.6;
+  if(S.set.cheap){ const cc=dishCost(d), mx=S.set.maxpp||2; w*= cc<=mx ? 2.2 : (cc>mx*1.5 ? .35 : 1); }
   if(S.set.ufr && fridgeCount()>0 && d.ing && d.ing.length){ const f=1-missing(d).length/d.ing.length; w*= f>=1 ? 14 : .25+3*f*f; }
   return Math.max(.1,w);
 }
@@ -673,6 +675,7 @@ function penalty(list, prev){
     if(b && d.st!=='L' && b.st===d.st) p+=4;
     if(prev.has(d.id)) p+=3;
     if(S.set.ufr && WC && WC.get(d.id+'#m')>0) p+=2;
+    if(RECENT.has(d.id)) p+=2;
     if(S.set.season && inSeason(d,mo)===false) p+=3;
   });
   Object.keys(sc).forEach(k=>{ if(k!=='L' && sc[k]>cap) p+=10*(sc[k]-cap); });
@@ -689,6 +692,7 @@ function generate(){
   const own = ownPool().filter(d=>!fixed.has(d.id)), idea = (S.set.ufr && fridgeCount()>=3) ? fridgeIdeas(24).filter(d=>!excludedBy(d).length) : [], disc = discoPool().filter(d=>!fixed.has(d.id)).concat(idea);
   const prev = prevIds();
   WC = new Map(); own.concat(disc).forEach(d=>{ WC.set(d.id,weight(d)); WC.set(d.id+'#m',missing(d).length); });
+  RECENT = new Set(); for(let k=2;k<=4;k++){ const pl=S.plans[iso(addDays(parseD(S.week),-7*k))]; if(pl) pl.slots.forEach(s=>{ if(s) RECENT.add(s.id); }); }
   let best=null, bp=1e9;
   for(let t=0;t<400;t++){
     const dn = Math.min(own.length?S.set.discover:free.length, disc.length, free.length);
@@ -897,7 +901,92 @@ function genDishes(n){
   }
   return out;
 }
-GEN = genDishes(480); GENM = Object.fromEntries(GEN.map(d=>[d.id,d]));
+/* ===== Plats simples du quotidien, classiques et petit budget ===== */
+const SB={
+ pates:{e:'🍝',n:['Pâtes','Spaghetti','Coquillettes','Penne','Tagliatelles'],st:'P',ing:['pâtes'],ap:'PL',t:12,s:"Cuire les pâtes 9 à 10 min dans l'eau bouillante salée, égoutter."},
+ riz:{e:'🍚',n:['Riz'],st:'R',ing:['riz'],ap:'CR',t:15,s:'Cuire le riz 10 à 12 min (ou au cuiseur à riz).'},
+ puree:{e:'🥔',n:['Purée'],st:'T',ing:['pommes de terre','lait','beurre'],ap:'PL',t:25,s:'Cuire les pommes de terre épluchées 20 min, écraser avec du lait chaud et une noix de beurre.'},
+ frites:{e:'🍟',n:['Frites'],st:'T',ing:['frites surgelées'],ap:'AF',t:20,s:'Cuire les frites 15 à 20 min à 200 °C (air fryer ou four) en remuant à mi-cuisson.'},
+ semoule:{e:'🥣',n:['Semoule'],st:'C',ing:['semoule'],ap:'BO',t:8,s:"Verser de l'eau bouillante sur la semoule, couvrir 5 min, égrener à la fourchette."}
+};
+const SPR={
+ cordon:['🧀','cordon bleu','poulet','cordon bleu','FO,AF',20,"Cuire le cordon bleu 20 min à 200 °C au four (12 min à l'air fryer).",['pates','riz','puree','frites']],
+ steak:['🥩','steak haché','boeuf','steak haché','PL',8,'Cuire le steak haché 3 à 4 min par face à la poêle.',['pates','riz','puree','frites','semoule']],
+ saucisse:['🌭','saucisses','porc','saucisses','PL',15,'Dorer les saucisses 12 à 15 min à la poêle en les retournant.',['pates','riz','puree','frites','semoule']],
+ jambon:['🍖','jambon','porc','jambon','',2,'Servir le jambon en tranches ou réchauffé en dés à la poêle.',['pates','puree','riz']],
+ nuggets:['🍗','nuggets','poulet','nuggets','AF,FO',15,'Cuire les nuggets 12 à 15 min à 200 °C (air fryer ou four).',['frites','puree','pates','riz']],
+ poisson:['🐟','poisson pané','poisson','poisson pané','AF,FO',15,'Cuire le poisson pané 12 à 15 min à 200 °C (air fryer ou four).',['puree','riz','frites','pates']],
+ oeuf:['🍳','œufs au plat','oeuf','œufs','PL',5,"Cuire les œufs au plat 3 min dans un peu d'huile.",['frites','puree','riz','pates']],
+ thon:['🐟','thon','poisson','thon en boîte','',2,'Émietter le thon égoutté et le mélanger à la base chaude.',['pates','riz','semoule']],
+ lardons:['🥓','lardons','porc','lardons','PL',8,'Faire dorer les lardons 5 min à la poêle sans matière grasse.',['pates','riz','puree']],
+ escalope:['🍗','escalope de poulet','poulet','escalope de poulet','PL',12,"Cuire l'escalope 5 à 6 min par face à la poêle.",['pates','riz','puree','frites','semoule']],
+ merguez:['🌶️','merguez','boeuf','merguez','PL',12,'Griller les merguez 10 à 12 min à la poêle.',['semoule','riz','frites']],
+ knacki:['🌭','knackis','porc','knacki','MO,PL',5,"Réchauffer les knackis 4 min dans l'eau chaude ou à la poêle.",['pates','puree','riz','frites']],
+ boulette:['🧆','boulettes de bœuf','boeuf','boulettes de bœuf','PL',12,'Dorer les boulettes 10 à 12 min à la poêle.',['pates','riz','semoule','puree']],
+ vegetal:['🌱','steak végétal','veggie','steak végétal','PL',8,'Cuire le steak végétal 3 à 4 min par face à la poêle.',['pates','riz','puree','semoule']]
+};
+const SSIDE=[['',''],['haricots verts','Cuire les haricots verts 8 min à l\'eau ou à la vapeur.'],['carottes','Cuire les carottes en rondelles 12 min à l\'eau ou à la vapeur.'],['petits pois','Réchauffer les petits pois 5 min à la casserole.'],['brocoli','Cuire le brocoli 8 min à la vapeur.'],['maïs','Réchauffer le maïs égoutté 3 min.'],['salade','Assaisonner la salade avec un filet d\'huile et de vinaigre.'],['ratatouille','Réchauffer la ratatouille 8 min.']];
+const SSAUCE=[['',''],['',''],['sauce tomate','Réchauffer la sauce tomate et en napper le plat.'],['crème','Ajouter une cuillère de crème fraîche et mélanger.'],['fromage râpé','Parsemer de fromage râpé.']];
+const SCLASSIC=[
+['🍳','Omelette & frites','T','oeuf','','œufs, frites surgelées, beurre','','PL,AF;20;Cuire les frites 15 à 20 min à 200 °C.|Battre 3 œufs avec sel et poivre, cuire à la poêle 3 min en roulant.|Servir avec les frites.'],
+['🥪','Croque-monsieur','B','porc','','pain de mie, jambon, emmental, béchamel','','CQ,FO;15;Tartiner de béchamel, garnir de jambon et emmental.|Fermer et cuire 5 min à l\'appareil à croque (ou 10 min au four).'],
+['🥧','Hachis parmentier','T','boeuf','gratin','steak haché, pommes de terre, lait, beurre, oignon, emmental','','FO;50;Cuire les pommes de terre 20 min, les écraser avec lait et beurre.|Faire revenir oignon et viande 8 min.|Superposer viande, purée, emmental; gratiner 20 min à 200 °C.'],
+['🥧','Quiche lorraine','F','porc','tarte','pâte brisée, lardons, œufs, crème, emmental','','FO;50;Étaler la pâte, parsemer de lardons.|Battre 3 œufs avec 20 cl de crème, verser, ajouter l\'emmental.|Cuire 35 min à 180 °C.'],
+['🥔','Gratin dauphinois & jambon','T','porc','gratin','pommes de terre, crème, lait, jambon, ail','','FO;75;Trancher finement les pommes de terre.|Les disposer dans un plat avec ail, crème et lait.|Cuire 55 min à 180 °C, servir avec le jambon.'],
+['🍝','Pâtes carbonara','P','porc','creme','pâtes, lardons, œufs, crème, parmesan','','PL;20;Cuire les pâtes, dorer les lardons.|Mélanger 2 œufs, un peu de crème et du parmesan.|Hors du feu, mêler pâtes, lardons et sauce.'],
+['🍝','Spaghetti bolognaise','P','boeuf','','pâtes, steak haché, sauce tomate, oignon, carotte','','PL;30;Faire revenir oignon et carotte râpée, ajouter la viande 5 min.|Verser la sauce tomate, mijoter 15 min.|Servir sur les pâtes cuites.'],
+['🍚','Riz cantonais','R','porc','wok','riz, jambon, œufs, petits pois, carottes, sauce soja','','PL;25;Cuire le riz.|Sauter carottes, petits pois et jambon 5 min, pousser sur le côté et brouiller les œufs.|Ajouter le riz et la sauce soja, mélanger 2 min.'],
+['🍕','Pizza jambon-fromage','F','porc','','pâte à pizza, sauce tomate, jambon, mozzarella','','FO;25;Étaler la pâte, la napper de sauce tomate.|Ajouter jambon et mozzarella.|Cuire 12 à 15 min à 220 °C.'],
+['🍅','Tomates farcies & riz','R','boeuf','','tomate, steak haché, oignon, riz','','FO;55;Évider les tomates, mélanger la pulpe à la viande et à l\'oignon.|Garnir les tomates, cuire 35 min à 180 °C.|Servir avec le riz.'],
+['🥗','Salade de pâtes thon-maïs','P','poisson','','pâtes, thon en boîte, maïs, tomate, mayonnaise','','PL;20;Cuire et refroidir les pâtes.|Mélanger avec thon émietté, maïs, tomate en dés et mayonnaise.'],
+['🍲','Saucisses-lentilles','L','porc','','saucisses, lentilles, carotte, oignon, bouillon','','PL;40;Faire revenir oignon et carotte, ajouter les lentilles et le bouillon.|Mijoter 25 min, ajouter les saucisses dorées.'],
+['🥣','Soupe de légumes & tartines','B','veggie','','carotte, pommes de terre, poireau, oignon, pain, fromage','','PL;35;Cuire les légumes en morceaux 25 min dans l\'eau salée.|Mixer, servir avec des tartines de fromage.'],
+['🍗','Poulet rôti & pommes de terre','T','poulet','','poulet, pommes de terre, oignon, huile','','FO;75;Disposer le poulet et les pommes de terre dans un plat avec huile et oignon.|Cuire 60 min à 200 °C en arrosant.'],
+['🧀','Gratin de pâtes au jambon','P','porc','gratin','pâtes, jambon, crème, emmental','','FO;30;Cuire les pâtes, mélanger avec jambon en dés et crème.|Couvrir d\'emmental, gratiner 15 min à 200 °C.'],
+['🌮','Tacos maison','B','boeuf','sandwich','wraps, steak haché, tomate, salade, fromage râpé','','PL;20;Poêler la viande 5 min.|Garnir les wraps de viande, tomate, salade et fromage, rouler.'],
+['🥔','Pommes de terre sautées & œufs','T','oeuf','','pommes de terre, œufs, oignon, huile','','PL;30;Cuire les pommes de terre en dés 15 min à la poêle avec l\'oignon.|Casser les œufs dessus, couvrir 4 min.'],
+['🥪','Croque-madame','B','porc','','pain de mie, jambon, emmental, œufs, béchamel','','CQ,PL;20;Préparer le croque-monsieur.|Poser un œuf au plat dessus.']
+];
+const SBUDGET=[
+['🫘','Chili sin carne & riz','R','veggie','','haricots rouges, maïs, sauce tomate, oignon, riz','','PL;30;Faire revenir l\'oignon.|Ajouter haricots rouges, maïs et sauce tomate, mijoter 15 min.|Servir sur le riz cuit.'],
+['🥣','Dahl de lentilles & riz','R','veggie','','lentilles, oignon, sauce tomate, curry, lait de coco, riz','','PL;30;Faire revenir l\'oignon avec le curry.|Ajouter lentilles, sauce tomate, lait de coco et 40 cl d\'eau, cuire 20 min.|Servir avec le riz.'],
+['🍲','Soupe de pois chiches','L','veggie','','pois chiches, carotte, oignon, bouillon, pain','','PL;30;Faire revenir oignon et carotte.|Ajouter pois chiches et bouillon, cuire 15 min.|Mixer à moitié, servir avec du pain.'],
+['🥦','Gratin de chou-fleur','L','fromage','gratin','chou-fleur, béchamel, emmental','','FO;45;Cuire le chou-fleur 10 min à l\'eau.|Napper de béchamel, parsemer d\'emmental, gratiner 20 min à 200 °C.'],
+['🥞','Galettes de pommes de terre & œuf','T','oeuf','','pommes de terre, œufs, oignon, farine','','PL;30;Râper pommes de terre et oignon, mélanger à un œuf et 2 c. à soupe de farine.|Dorer des galettes 4 min par face, servir avec un œuf au plat.'],
+['🍝','Pâtes aux épinards & œuf','P','oeuf','','pâtes, épinards, œufs, emmental','','PL;20;Cuire les pâtes.|Réchauffer les épinards, ajouter aux pâtes avec un œuf mollet et de l\'emmental.'],
+['🥔','Tortilla de pommes de terre','T','oeuf','','pommes de terre, œufs, oignon, huile','','PL;35;Cuire pommes de terre et oignon en lamelles 15 min.|Ajouter 5 œufs battus, cuire 6 min par face.'],
+['🍚','Riz au thon & tomate','R','poisson','','riz, thon en boîte, tomate, oignon','','PL;20;Cuire le riz.|Mélanger avec thon émietté, tomate en dés et oignon.'],
+['🥕','Carottes-lentilles au curry','R','veggie','','carotte, lentilles, oignon, curry, riz','','PL;35;Faire revenir oignon et carottes en rondelles avec le curry.|Ajouter lentilles et eau, cuire 25 min, servir avec le riz.'],
+['🎃','Soupe de potiron & croûtons','B','veggie','','potiron, oignon, crème, pain','','PL;35;Cuire potiron et oignon 25 min.|Mixer avec un peu de crème, servir avec des croûtons.'],
+['🌯','Wraps haricots rouges-maïs','B','veggie','sandwich','wraps, haricots rouges, maïs, salade, fromage râpé','','PL;15;Réchauffer haricots et maïs 4 min.|Garnir les wraps avec salade et fromage, rouler.'],
+['🍜','Nouilles sautées aux légumes','P','veggie','wok','nouilles, carotte, chou, oignon, sauce soja, œufs','','PL;20;Cuire les nouilles.|Sauter légumes en lanières 6 min avec un œuf brouillé.|Ajouter nouilles et sauce soja.'],
+['🍛','Curry de pois chiches & riz','R','veggie','curry','pois chiches, oignon, sauce tomate, lait de coco, curry, riz','','PL;30;Faire revenir l\'oignon et le curry.|Ajouter pois chiches, sauce tomate et lait de coco, mijoter 15 min.|Servir avec le riz.'],
+['🥘','Poêlée pommes de terre-saucisse','T','porc','','pommes de terre, saucisses, oignon, huile','','PL;35;Cuire les pommes de terre en dés 15 min.|Ajouter saucisses en rondelles et oignon, dorer 10 min.'],
+['🍅','Riz aux haricots blancs & tomate','R','veggie','','riz, haricots blancs, sauce tomate, oignon','','PL;25;Cuire le riz.|Réchauffer haricots, sauce tomate et oignon 10 min, servir ensemble.'],
+['🥬','Gratin de courgettes & riz','R','fromage','gratin','courgette, riz, œufs, emmental, crème','','FO;50;Mélanger courgettes râpées, riz cuit, œufs, crème et emmental.|Cuire 30 min à 180 °C.']
+];
+function extraDishes(){
+  const R=mulberry(777), pick=a=>a[Math.floor(R()*a.length)], out=[], seen=new Set();
+  Object.keys(SPR).forEach(pk=>{
+    const P=SPR[pk];
+    P[7].forEach(bk=>{
+      const B=SB[bk];
+      for(let i=0;i<(bk==='pates'?9:4);i++){
+        const side=pick(SSIDE), sauce=bk==='pates'?pick(SSAUCE):['',''], bn=pick(B.n);
+        const name=bk==='frites'||bk==='puree'||bk==='riz'||bk==='semoule' ? P[1].charAt(0).toUpperCase()+P[1].slice(1)+' '+bn.toLowerCase() : bn+' '+P[1];
+        const full=name+(side[0]?' & '+side[0]:'')+(sauce[0]?' sauce '+sauce[0].replace('sauce ',''):'');
+        if(seen.has(full)) continue; seen.add(full);
+        const ing=B.ing.concat([P[3]],side[0]?[side[0]]:[],sauce[0]?[sauce[0]]:[]);
+        const steps=[B.s,P[6],side[1],sauce[1],'Servir bien chaud.'].filter(Boolean).join('|');
+        const ap=[...new Set((B.ap+','+P[4]).split(',').filter(Boolean))].join(',');
+        out.push(mk('x',[B.e+(P[0]===B.e?'':''),full,B.st,P[2],'simple',ing.join(', '),'',`${ap};${Math.max(B.t,P[5])+5};${steps}`],'new'));
+      }
+    });
+  });
+  SCLASSIC.concat(SBUDGET).forEach(r=>out.push(mk('x',r,'new')));
+  return out;
+}
+GEN = genDishes(480).concat(extraDishes()); GEN.forEach((d,i)=>{ if(i>=480){ d.id='dg'+i; d.kind='new'; d.gen=true; d.simple=true; d.pending=false; } }); GENM = Object.fromEntries(GEN.map(d=>[d.id,d]));
 function fridgeIdeas(n){
   const R=Math.random, pick=a=>a[Math.floor(R()*a.length)], shuf=a=>a.slice().sort(()=>R()-.5);
   const bases=BASES.filter(b=>b[0]!=='legumes' && b[4] && have(b[4])).map(b=>b[0]);
@@ -924,7 +1013,7 @@ function ideaToCustom(d){ const nd=Object.assign({},d,{id:'c'+Date.now()+'_'+Mat
 function viewIdeasSheet(){
   const I=S.ideas||{mode:'any',list:[]}, ds=I.list.map(dishById).filter(Boolean);
   const rows=ds.map(d=>`<div style="margin:10px 0"><button class="opt" style="display:block;width:100%;text-align:left" data-act="ideaopen" data-id="${d.id}">${d.e} ${esc(d.name)}</button><div class="chips" style="margin-top:4px">${I.mode==='fridge'?fridgeChip(d):''}${badges(d)}</div></div>`).join('');
-  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Idées de recettes"><div class="plate" style="--tile:var(--cL)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">💡</span></div><div class="mb"><h2>${I.mode==='fridge'?'Recettes avec mon frigo':'Idées de recettes'}</h2><p class="note" style="margin:0">${I.mode==='fridge'?'Composées uniquement avec ce que tu as en stock (hors sel, poivre et huile).':'Des assemblages nouveaux, tirés au sort parmi plusieurs centaines.'}</p>${rows||`<p>${I.mode==='fridge'?'Rien à composer pour le moment : ajoute des féculents, légumes ou protéines au frigo.':'Aucune idée disponible.'}</p>`}<div class="row"><button class="btn" data-act="ideasopen" data-v="${I.mode}">🎲 Autres idées</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div></div></div></div>`;
+  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Idées de recettes"><div class="plate" style="--tile:var(--cL)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">💡</span></div><div class="mb">${ideasHead(I)}${rows||`<p>${I.mode==='fridge'?'Rien à composer pour le moment : ajoute des féculents, légumes ou protéines au frigo.':'Aucune idée disponible.'}</p>`}<div class="row"><button class="btn" data-act="ideasopen" data-v="${I.mode}">🎲 Autres idées</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div></div></div></div>`;
 }
 function viewPlaceSheet(){
   const pl=S.plans[S.week], mode=pl?pl.mode:S.set.mode, n=slotCount(mode), d=dishById(S.pl);
@@ -979,7 +1068,7 @@ function catalog(){
   VEG.forEach(v=>put(v.k,v.e,'legume'));
   FINS.forEach(f=>put(f[0],f[1], (f[2]==='Fromages'||f[0]==='crème')?'cremerie':'epicerie'));
   S.myIng.forEach(it=>put(it.name,it.e,TYPER[it.type]||'autre'));
-  [...BASE,...DISC,...S.custom].forEach(d=>d.ing.forEach(x=>put(x,null,guessRayon(x))));
+  [...BASE,...DISC,...GEN,...S.custom].forEach(d=>d.ing.forEach(x=>put(x,null,guessRayon(x))));
   CATM = m; return m;
 }
 function fridgeCount(){ return Object.keys(S.fridge).filter(k=>S.fridge[k].q>0).length; }
@@ -1051,6 +1140,7 @@ const apChips = d => (d.ap||[]).map(a=>`<span class="chip ap" title="${esc(AP[a]
 
 // Estimations nutritionnelles : [regex, kcal/100 g, protéines/100 g, grammes par personne]
 const NUT = [
+[/cordon bleu/,230,15,130],[/nugget/,250,14,100],[/knacki|merguez/,290,14,100],[/boulette/,230,17,125],[/frite/,280,3.5,150],[/pur[ée]e|flocon/,90,2,200],[/petit pois/,80,5,80],
 [/steak végétal/,190,16,100],[/tofu/,120,13,100],[/halloumi/,320,22,50],[/saint-jacques|surimi/,90,12,100],[/colin|truite/,100,19,130],[/agneau/,250,18,125],[/porc/,180,22,125],[/pesto/,450,5,15],[/aubergine|artichaut|blette|asperge|radis|betterave|kale|céleri|fenouil|panais|navet|topinambour|endive|mâche|potiron/,35,1.8,100],
 [/saumon fum/,180,22,40],[/saumon/,200,20,120],[/thon/,130,26,80],[/cabillaud/,85,19,130],[/poisson pan/,230,12,130],[/crevette/,95,20,100],
 [/poulet pan/,260,17,130],[/poulet|dinde/,150,26,130],[/canard/,200,19,130],[/bœuf|boeuf|steak/,230,20,125],[/saucisse/,300,14,100],[/chorizo/,430,24,35],[/lardons|bacon/,290,17,40],[/jambon/,115,20,40],[/œuf|oeuf/,145,12.5,60],
@@ -1177,10 +1267,10 @@ function adaptBox(d){
   return out.length ? out.join('')+'<div class="note">Repères indicatifs, à adapter à chacun. En cas de doute, demande conseil à un professionnel de santé.</div>' : '';
 }
 const OB_BK = `<div style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px"><h3>J'ai déjà un compte</h3><p class="note">Colle ici une sauvegarde créée depuis un autre navigateur, ou choisis le fichier.</p><textarea id="bk-ob" rows="3" style="${OB_IN};font:13px monospace" placeholder="Colle ta sauvegarde ici"></textarea><div class="row" style="margin-top:8px"><button class="btn" data-ob="bkload">Charger la sauvegarde</button><label class="btn ghost sm" style="cursor:pointer">📂 Choisir un fichier<input type="file" id="bk-file" accept=".json,application/json,text/plain" style="display:none"></label><button class="btn ghost sm" data-ob="bkmake">Créer une sauvegarde</button></div></div>`;
-function bkExport(){ return JSON.stringify({v:2,plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref,edits:S.edits},(k,x)=>k==='_v'?undefined:x); }
+function bkExport(){ return JSON.stringify({v:2,plans:S.plans,prefs:S.prefs,off:S.off,adopted:S.adopted,custom:S.custom,votes:S.votes,excl:S.excl,fridge:S.fridge,myIng:S.myIng,checked:S.checked,set:S.set,profile:S.profile,pp:S.pp,link:S.link,ts:S.ts,buys:S.buys,bud:S.bud,upref:S.upref,edits:S.edits,sim:S.sim,known:S.known},(k,x)=>k==='_v'?undefined:x); }
 function bkImport(o){
   if(!o || typeof o!=='object' || !('plans' in o || 'custom' in o || 'profile' in o)) throw new Error('format');
-  ['plans','prefs','off','adopted','votes','excl','fridge','checked','pp','ts','buys','upref','edits'].forEach(k=>{ if(o[k] && typeof o[k]==='object') S[k]=o[k]; });
+  ['plans','prefs','off','adopted','votes','excl','fridge','checked','pp','ts','buys','upref','edits','sim','known'].forEach(k=>{ if(o[k] && typeof o[k]==='object') S[k]=o[k]; });
   if(Array.isArray(o.myIng)){ S.myIng.slice().forEach(unapplyMyIng); S.myIng=o.myIng; S.myIng.forEach(applyMyIng); }
   if(Array.isArray(o.custom)) S.custom=o.custom;
   if(typeof o.bud==='number') S.bud=o.bud;
@@ -1295,7 +1385,7 @@ function viewReceiptSheet(){
   let body;
   if(rc.stage==='review'){
     const nOn = rc.rows.filter(r=>r.on).length, sum = rc.rows.filter(r=>r.on).reduce((a,r)=>a+(r.price||0),0), ib='border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);padding:6px 8px;font:inherit';
-    body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Seuls les aliments reconnus sont cochés, avec leur quantité et leur prix. Corrige un nom, un poids ou un prix si besoin.</p><div class="fld"><label for="rc-date">Date des courses</label><input type="date" id="rc-date" value="${esc(rc.date||'')}" style="${ib}"></div>${sum>0?`<p class="note" style="margin:0">Articles cochés : ${fe(sum)}${rc.doc?' · total de la facture : '+fe(rc.doc):''}. Ce montant est ajouté au budget.</p>`:''}
+    body = `<h2>Vérifie les articles</h2><p class="note" style="margin:0">Seuls les aliments reconnus sont cochés, avec leur quantité et leur prix. Corrige un nom, un poids ou un prix si besoin.</p><div class="fld"><label for="rc-shop">Enseigne</label><select id="rc-shop">${SHOPS.map(s=>`<option value="${s.k}" ${(rc.shop||simState().shop)===s.k?'selected':''}>${s.n}</option>`).join('')}</select></div><div class="fld"><label for="rc-date">Date des courses</label><input type="date" id="rc-date" value="${esc(rc.date||'')}" style="${ib}"></div>${sum>0?`<p class="note" style="margin:0">Articles cochés : ${fe(sum)}${rc.doc?' · total de la facture : '+fe(rc.doc):''}. Ce montant est ajouté au budget.</p>`:''}
     <div class="row"><button class="btn ghost sm" data-act="rcall" data-v="1">Tout cocher</button><button class="btn ghost sm" data-act="rcall" data-v="0">Tout décocher</button></div>
     <div style="max-height:46vh;overflow:auto">${rc.rows.map((r,i)=>`${r.sep?'<p class="note" style="margin:12px 0 2px">Lignes ignorées (non alimentaires ou non reconnues). Coche-les si ce sont bien des aliments :</p>':''}<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--line)"><input type="checkbox" data-act="rctog" data-i="${i}" ${r.on?'checked':''} aria-label="Ajouter ${esc(r.name)}"><span>${r.e}</span><input data-rcname="${i}" value="${esc(r.name)}" style="flex:1;min-width:0;${ib}" aria-label="Nom de l'article"><button class="opt" data-act="rcqty" data-i="${i}" data-v="-1" aria-label="Moins">−</button><b>${r.q}</b><button class="opt" data-act="rcqty" data-i="${i}" data-v="1" aria-label="Plus">+</button></div><div style="display:flex;gap:6px;margin:0 0 6px 30px"><input data-rcsize="${i}" value="${esc(r.size||'')}" placeholder="Poids / volume (ex. 500 g, 1 L)" style="flex:1;min-width:0;${ib}" aria-label="Poids ou volume"><input data-rcprice="${i}" inputmode="decimal" value="${r.price?String(r.price).replace('.',','):''}" placeholder="Prix €" style="width:84px;${ib}" aria-label="Prix payé"></div>`).join('')}</div>
     <div class="row"><button class="btn ghost sm" data-act="rcnew">➕ Ajouter une ligne</button></div>
@@ -1432,6 +1522,168 @@ function viewDeditSheet(){
   <div class="row"><button class="btn" data-act="desave">Enregistrer</button><button class="btn ghost" data-act="sheetclose">Annuler</button></div>
   ${d&&S.edits&&S.edits[id]?`<div class="row"><button class="btn ghost sm" data-act="dereset">↩️ Rétablir la recette d'origine</button></div>`:''}</div></div></div>`;
 }
+/* ===== Prix de référence, coût des recettes, simulation de courses ===== */
+const PDB=[
+['pate (brisee|feuilletee|a pizza|sablee)','Pâte prête à dérouler',1.7,'u',1,3,'Herta',280,1,''],
+['cordon bleu','Cordons bleus',8.5,'kg',250,2,'Père Dodu',0,1,''],
+['nugget','Nuggets de poulet',8.5,'kg',300,2,'Maxi Best of',0,1,''],
+['poisson pane','Poisson pané',9.5,'kg',280,2,'Findus',0,1,''],
+['steak vegetal|tofu','Steaks végétaux / tofu',9,'kg',200,4,'',0,1,''],
+['steak hache|boeuf hache|boulette|hache','Steaks hachés',9.9,'kg',250,3,'Charal',0,1,''],
+['saucisse|knacki|merguez|chorizo','Saucisses',8,'kg',400,2,'Herta',0,1,''],
+['jambon','Jambon blanc',12.5,'kg',160,3,'Herta',0,1,''],
+['lardon|bacon','Lardons',9.5,'kg',200,2,'Herta',0,1,''],
+['poulet|dinde|escalope','Escalopes de poulet / dinde',9.5,'kg',300,4,'Le Gaulois',0,1,''],
+['saumon','Saumon',21,'kg',250,4,'',0,1,''],
+['cabillaud|colin|poisson|truite','Filets de poisson',14,'kg',300,4,'',0,1,''],
+['thon|sardine|maquereau','Thon / sardines en boîte',15,'kg',140,4,'Petit Navire',0,1,''],
+['crevette|saint.?jacque|surimi','Crevettes / surimi',16,'kg',250,3,'',0,1,''],
+['oeuf','Œufs',0.4,'u',6,4,'Matines',55,1,''],
+['lait de coco','Lait de coco',4.5,'L',40,2,'',0,1,''],
+['lait','Lait demi-écrémé',0.95,'L',100,4,'Lactel',0,1,''],
+['creme','Crème fraîche',5.8,'L',20,2,'Elle & Vire',0,1,''],
+['beurre','Beurre',9.5,'kg',250,2,'Président',0,1,''],
+['yaourt|fromage blanc|skyr','Yaourts nature',2.3,'kg',500,4,'Danone',0,1,''],
+['mozzarella','Mozzarella',7.5,'kg',125,3,'Galbani',0,1,''],
+['chevre|feta','Chèvre / feta',11,'kg',150,3,'Soignon',0,1,''],
+['boursin|kiri|fromage frais|ricotta','Fromage frais',14,'kg',150,3,'Boursin',0,1,''],
+['fromage|emmental|gruyere|comte|cheddar|raclette|reblochon|parmesan','Fromage râpé / emmental',9.5,'kg',200,2,'Président',0,1,''],
+['gnocchi','Gnocchis',3.8,'kg',500,3,'Giovanni Rana',0,1,''],
+['pate|spaghetti|coquillette|macaroni|penne|tagliatelle|fusilli|nouille','Pâtes',1.9,'kg',500,4,'Panzani',0,.38,'w'],
+['riz','Riz',2.3,'kg',1000,4,"Uncle Ben's",0,.35,'w'],
+['semoule|boulgour|couscous|quinoa','Semoule / boulgour',2.4,'kg',500,4,'Tipiak',0,.4,'w'],
+['lentille|pois? chiche|haricot rouge|haricot blanc|feve','Légumineuses',2.8,'kg',500,5,'',0,.4,''],
+['frite','Frites surgelées',2.8,'kg',1000,2,'McCain',0,1,''],
+['pomme de terre|patate|puree','Pommes de terre',1.7,'kg',2000,4,'',0,1,''],
+['pain de mie','Pain de mie',3,'kg',500,3,'Harrys',0,1,''],
+['wrap|tortilla','Wraps',6.5,'kg',370,3,'Old El Paso',0,1,''],
+['pain|baguette','Baguette',0.95,'u',1,3,'',250,1,''],
+['farine','Farine',1.3,'kg',1000,3,'Francine',0,1,''],
+['sauce tomate|concasse|coulis|puree de tomate','Sauce tomate',2.4,'kg',400,3,'Panzani',0,1,''],
+['tomate','Tomates',3.6,'kg',500,5,'',0,1,''],
+['oignon|echalote','Oignons',1.8,'kg',1000,5,'',0,1,''],
+['carotte','Carottes',1.4,'kg',1000,5,'',0,1,''],
+['courgette','Courgettes',2.9,'kg',500,5,'',0,1,''],
+['aubergine','Aubergines',3.2,'kg',500,5,'',0,1,''],
+['poivron','Poivrons',4.2,'kg',500,5,'',0,1,''],
+['champignon','Champignons',5.5,'kg',250,5,'',0,1,''],
+['poireau','Poireaux',3,'kg',1000,5,'',0,1,''],
+['chou.?fleur','Chou-fleur',2,'u',1,5,'',700,1,''],
+['brocoli','Brocolis',3.6,'kg',500,5,'',0,1,''],
+['chou','Chou',1.8,'kg',1000,5,'',0,1,''],
+['epinard','Épinards surgelés',3.1,'kg',750,5,'',0,1,''],
+['haricot vert','Haricots verts surgelés',3.3,'kg',1000,5,'',0,1,''],
+['petit pois?','Petits pois surgelés',3,'kg',1000,4,'',0,1,''],
+['mais?','Maïs en boîte',3.4,'kg',300,4,'Bonduelle',0,1,''],
+['ratatouille|legume surgele|poelee','Légumes surgelés / ratatouille',3.5,'kg',1000,5,'',0,1,''],
+['potiron|butternut|potimarron|courge','Potiron / butternut',2.4,'kg',1000,5,'',0,1,''],
+['concombre','Concombre',1,'u',1,5,'',350,1,''],
+['salade|laitue|mesclun|roquette','Salade',1,'u',1,5,'',300,1,''],
+['pomme|poire','Pommes / poires',2.6,'kg',1000,5,'',0,1,''],
+['banane','Bananes',1.9,'kg',1000,5,'',0,1,''],
+['orange|clementine|mandarine','Oranges / clémentines',2.4,'kg',1000,5,'',0,1,''],
+['citron','Citrons',3.8,'kg',500,5,'',0,1,'p'],
+['huile|vinaigre','Huile / vinaigre',4,'L',100,3,'Lesieur',0,1,'p'],
+['sel|poivre|epice|paprika|curry|cumin|herbe|persil|basilic|ciboulette|thym|ail|sucre|miel|bouillon|moutarde|mayonnaise|ketchup|sauce|chapelure|sesame|nori','Épicerie / condiments',6,'kg',250,3,'',0,1,'p']
+].map(r=>({re:new RegExp('\\b(?:'+r[0]+')\\b'),l:r[1],p:r[2],u:r[3],pk:r[4],h:r[5],b:r[6],uw:r[7],dry:r[8],fl:r[9]}));
+const SHOPS=[{k:'lidl',n:'Lidl',idx:.975,bi:1.005},{k:'aldi',n:'Aldi',idx:1.02,bi:1.045},{k:'leclerc',n:'E.Leclerc',idx:1,bi:1,eco:'Marque Repère'},{k:'inter',n:'Intermarché',idx:1.04,bi:1.04,eco:'Paquito'},{k:'u',n:'Super U',idx:1.045,bi:1.045},{k:'carrefour',n:'Carrefour',idx:1.07,bi:1.07,eco:"Carrefour Classic'"},{k:'auchan',n:'Auchan',idx:1.11,bi:1.1},{k:'autre',n:'Autre enseigne',idx:1.08,bi:1.08}];
+const TIERS={eco:{f:.75},mdd:{f:1},brand:{f:1.43},bio:{f:1.55},prem:{f:1.9},whole:{f:1.12}};
+const CRITS=[['cheap','💶 Le moins cher'],['health','🥗 Meilleur pour la santé'],['bio','🌱 Bio'],['brand','🏷️ Marques connues'],['mdd',"🏪 Marque de l'enseigne"],['prem','⭐ Qualité supérieure']];
+var CCOST=new Map(), RECENT=new Set();
+function simState(){ S.sim=S.sim||{shop:'leclerc',crit:['cheap'],over:{}}; if(!S.sim.over) S.sim.over={}; return S.sim; }
+function simShop(){ const k=(S.sim&&S.sim.shop)||'leclerc'; return SHOPS.find(s=>s.k===k)||SHOPS[2]; }
+function priceCat(name){ const n=normI(name); for(let i=0;i<PDB.length;i++) if(PDB[i].re.test(n)) return i; return -1; }
+function dishCost(d){
+  const si=simShop().idx, key=d.id+'|'+si; if(CCOST.has(key)) return CCOST.get(key);
+  let c=0;
+  (d.ing||[]).forEach(x=>{
+    const i=priceCat(x), r=nutOf(x), g=r[0]?r[3]:30;
+    if(i<0){ c+=.12; return; }
+    const P=PDB[i]; if(P.fl.includes('p')){ c+=.03; return; }
+    c += P.u==='u' ? (g/(P.uw||100))*P.p : (g*P.dry/1000)*P.p;
+  });
+  c*=si; CCOST.set(key,c); return c;
+}
+function packTxt(P){ return P.u==='kg'?(P.pk>=1000?(P.pk/1000)+' kg':P.pk+' g'):P.u==='L'?(P.pk>=100?(P.pk/100)+' L':P.pk+' cl'):(P.pk>1?'× '+P.pk:'pièce'); }
+function simCands(ci,shop){
+  const P=PDB[ci], base=P.u==='kg'?P.p*P.pk/1000:P.u==='L'?P.p*P.pk/100:P.p*P.pk, out=[];
+  const add=(tier,label,h,bio)=>{ out.push({tier,label,h:Math.min(5,Math.max(1,h)),price:Math.round(base*TIERS[tier].f*(tier==='brand'?shop.bi:shop.idx)*100)/100,bio:!!bio}); };
+  add('eco','1er prix'+(shop.eco?' ('+shop.eco+')':''),P.h-.3);
+  add('mdd','marque '+shop.n,P.h);
+  if(P.b) add('brand',P.b,P.h);
+  add('bio','bio',P.h+.7,true);
+  if(P.fl.includes('w')) add('whole','complet / semi-complet',P.h+1);
+  if(!P.fl.includes('p')) add('prem','qualité supérieure / label',P.h+.2);
+  const kn=(S.known||{})[shop.k+'|'+ci]; if(kn) out.push({tier:'known',label:kn.n+(kn.size?' '+kn.size:'')+' (déjà acheté)',h:P.h,price:kn.price,bio:false});
+  return out;
+}
+function simPick(c,crit){
+  let pool=c.slice();
+  const keep=fn=>{ const f=pool.filter(fn); if(f.length) pool=f; };
+  if(crit.includes('bio')) keep(x=>x.bio);
+  if(crit.includes('brand')) keep(x=>x.tier==='brand');
+  if(crit.includes('mdd')) keep(x=>x.tier==='mdd'||x.tier==='eco');
+  if(crit.includes('prem')) keep(x=>x.tier==='prem');
+  if(crit.includes('health')){ const hx=Math.max(...pool.map(x=>x.h)); keep(x=>x.h>=hx-(crit.includes('cheap')?.75:.01)); }
+  pool.sort((a,b)=>a.price-b.price);
+  if(!crit.includes('cheap')) pool.sort((a,b)=>b.h-a.h||a.price-b.price);
+  const kn=pool.find(x=>x.tier==='known');
+  return (kn && kn.price<=pool[0].price*1.1) ? kn : pool[0];
+}
+function fridgeHave(P,it){ const u=it.u||'u', a=it.q*(it.s||1); if(P.u==='kg') return u==='g'?a:(u==='cl'?a*10:a*P.pk); if(P.u==='L') return u==='cl'?a:(u==='g'?a/10:a*P.pk); return u==='u'?a:a/(P.uw||100); }
+function simNeeds(){
+  const D=shopData(), need={}, pant=new Set(), unk=new Set();
+  D.entries.forEach(({d})=>{ const seen=new Set(); (d.ing||[]).forEach(x=>{
+    const k=keyOf(x); if(seen.has(k)) return; seen.add(k);
+    const i=priceCat(x); if(i<0){ unk.add(x); return; }
+    const P=PDB[i]; if(P.fl.includes('p')){ pant.add(P.l); return; }
+    const r=nutOf(x), g=(r[0]?r[3]:30)*ppOf(d.id);
+    const amt = P.u==='u' ? g/(P.uw||100) : P.u==='L' ? g*P.dry/10 : g*P.dry;
+    const e=need[i]=need[i]||{ci:i,amt:0}; e.amt+=amt;
+  }); });
+  Object.keys(S.fridge).forEach(k=>{ const it=S.fridge[k]; if(!(it.q>0)) return; const i=priceCat(it.n||k); if(need[i]) need[i].amt=Math.max(0,need[i].amt-fridgeHave(PDB[i],it)); });
+  return {need,pant:[...pant],unk:[...unk],D};
+}
+function simCompute(shopK,crit,N){
+  const st=simState(), shop=SHOPS.find(s=>s.k===shopK)||SHOPS[2]; N=N||simNeeds();
+  const lines=[]; let total=0;
+  Object.values(N.need).forEach(n=>{
+    if(n.amt<=0.01) return;
+    const P=PDB[n.ci], cands=simCands(n.ci,shop); let c=simPick(cands,crit);
+    const ov=st.over[n.ci]; if(ov){ const f=cands.find(x=>x.tier===ov); if(f) c=f; }
+    const packs=Math.max(1,Math.ceil(n.amt/P.pk-1e-6)), line=Math.round(packs*c.price*100)/100; total+=line;
+    lines.push({ci:n.ci,P,c,packs,line,cands});
+  });
+  return {lines,total:Math.round(total*100)/100,N};
+}
+function simText(R,shop){ return 'Courses '+shop.n+' ('+R.N.D.label+')\n'+R.lines.map(l=>l.packs+' × '+l.P.l+' '+packTxt(l.P)+' — '+l.c.label+' — '+fe(l.line)).join('\n')+'\nTotal estimé : '+fe(R.total); }
+function viewSimSheet(){
+  const st=simState(), shop=SHOPS.find(s=>s.k===st.shop)||SHOPS[2], N=simNeeds(), R=simCompute(shop.k,st.crit,N);
+  const cmp=SHOPS.map(s=>({s,t:simCompute(s.k,st.crit,N).total})).filter(x=>x.t>0).sort((a,b)=>a.t-b.t);
+  const grp={}; R.lines.forEach(l=>{ const rk=guessRayon(l.P.l); (grp[rk]=grp[rk]||[]).push(l); });
+  const chip=(act,v,l,on)=>`<button class="opt" data-act="${act}" data-v="${v}" aria-pressed="${on}">${esc(l)}</button>`;
+  const lines=RAY.filter(r=>grp[r.k]).map(r=>`<h4 style="margin:12px 0 4px">${r.e} ${esc(r.n)}</h4>${grp[r.k].map(l=>{ const h=Math.round(l.c.h); return `<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)"><div style="flex:1;min-width:0"><div>${l.packs} × ${esc(l.P.l)} ${esc(packTxt(l.P))}</div><div class="note" style="margin:0">${esc(l.c.label)} · santé ${'●'.repeat(h)}${'○'.repeat(5-h)}</div></div><b>${fe(l.line)}</b><button class="opt" data-act="simalt" data-i="${l.ci}" aria-label="Autre produit">↻</button></div>`; }).join('')}`).join('');
+  return `<div class="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="Simuler mes courses"><div class="plate" style="--tile:var(--cF)"><button class="closeb" data-act="sheetclose" aria-label="Fermer">✕</button><span class="e">🧮</span></div><div class="mb"><h2>Simuler mes courses</h2><p class="note" style="margin:0">${esc(N.D.label)} · à partir des repas prévus, moins ce qu'il y a au frigo.</p>
+  <h4 style="margin:8px 0 2px">Enseigne</h4><div class="opts">${SHOPS.map(s=>chip('simshop',s.k,s.n,st.shop===s.k)).join('')}</div>
+  <h4 style="margin:8px 0 2px">Je privilégie (plusieurs choix possibles)</h4><div class="opts">${CRITS.map(c=>chip('simcrit',c[0],c[1],st.crit.includes(c[0]))).join('')}</div>
+  ${R.lines.length?`<div style="margin:12px 0 4px;font-size:20px"><b>Total estimé : ${fe(R.total)}</b></div><p class="note" style="margin:0">${cmp.map((x,i)=>(x.s.k===shop.k?'<b>':'')+esc(x.s.n)+' '+fe(x.t)+(i===0?' ✅':'')+(x.s.k===shop.k?'</b>':'')).join(' · ')}</p>${lines}
+  <p class="note">Prix indicatifs : prix moyens ajustés selon le classement UFC-Que Choisir de mai 2026. Les produits déjà achetés (factures importées) utilisent leur prix réel. ${N.pant.length?'Supposés déjà au placard : '+esc(N.pant.join(', '))+'. ':''}${N.unk.length?N.unk.length+' ingrédient(s) non chiffré(s).':''}</p>
+  <div class="row"><button class="btn" data-act="simcopy">📋 Copier la liste</button><button class="btn ghost" data-act="sheetclose">Fermer</button></div>`:`<p>Rien à acheter : aucun repas prévu sur cette période, ou tout est déjà au frigo.</p><div class="row"><button class="btn ghost" data-act="sheetclose">Fermer</button></div>`}</div></div></div>`;
+}
+function ideasList(m){
+  if(m==='fridge') return fridgeIdeas(8);
+  if(m==='cheap'){
+    const mx=S.set.maxpp||2, pool=GEN.concat(DISC,S.custom.filter(d=>!d.pending)).filter(d=>{ const c=dishCost(d); return c>0 && c<=mx && !excludedBy(d).length; });
+    const sh=a=>a.sort(()=>Math.random()-.5), sp=sh(pool.filter(d=>d.simple)).slice(0,5), ot=sh(pool.filter(d=>!d.simple)).slice(0,8-sp.length);
+    return sp.concat(ot).sort((a,b)=>dishCost(a)-dishCost(b));
+  }
+  return wsample(GEN.filter(d=>!S.adopted[d.id] && !excludedBy(d).length),8);
+}
+function ideasHead(I){
+  if(I.mode==='cheap') return `<h2>Recettes petit budget</h2><p class="note" style="margin:0">Des plats simples à moins de ${fe(S.set.maxpp||2)} par personne (prix moyens). Change le plafond ci-dessous.</p><div class="fld"><label for="cheap-max">Budget maximum par personne (€)</label><input id="cheap-max" type="number" step="0.1" min="0.5" value="${S.set.maxpp||2}" style="${OB_IN}"></div>`;
+  return `<h2>${I.mode==='fridge'?'Recettes avec mon frigo':'Idées de recettes'}</h2><p class="note" style="margin:0">${I.mode==='fridge'?'Composées uniquement avec ce que tu as en stock (hors sel, poivre et huile).':'Des assemblages nouveaux, tirés au sort parmi plusieurs centaines.'}</p>`;
+}
+document.addEventListener('change', e=>{ const t=e.target; if(t.id==='rc-shop' && S.rc) S.rc.shop=t.value; if(t.id==='cheap-max'){ S.set.maxpp=Math.max(.5,parseFloat(t.value)||2); save(); S.ideas={mode:'cheap',list:ideasList('cheap').map(d=>d.id)}; render(); } });
 function badges(d, withAp){
   let h = `<span class="chip st" ${tile(d.st)}>${esc(ST[d.st].n)}</span>`;
   if(isCandidate(d)) h += d.from ? `<span class="chip new">Variante de ${esc(d.from)}</span>` : `<span class="chip new">${d.kind==='mine'?'Ma création à valider':'À découvrir'}</span>`;
@@ -1443,6 +1695,7 @@ function badges(d, withAp){
   const ex = excludedBy(d); if(ex.length) h += `<span class="chip warn">Contient : ${esc(ex.map(k=>itemLabel(k).replace(/^\S+ /,'')).join(', '))}</span>`;
   const nt = nutTags(d);
   if(d.ready) h += '<span class="chip">🥡 Plat tout prêt</span>';
+  if(!d.ready){ const cc=dishCost(d); if(cc>0){ h += `<span class="chip">💶 ~${fe(cc)}/pers.</span>`; if(cc<=(S.set.maxpp||2)) h += '<span class="chip leaf">🪙 Petit budget</span>'; } }
   if(d.ing.length && (!d.ready||d.kcal)) h += `<span class="chip">🔥 ~${nt.n.k} kcal/pers.</span><span class="chip ${nt.cal==='high'?'warn':''}">${{low:'🥗 Faible en calories',mid:'⚖️ Calories moyennes',high:'🍔 Riche en calories'}[nt.cal]}</span><span class="chip">${{hi:'💪 Riche en protéines',mid:'💪 Protéines moyennes',lo:'🌱 Peu protéiné'}[nt.pro]} · ~${nt.n.p} g</span>`;
   if(withAp) h += apChips(d);
   return h;
@@ -1498,6 +1751,7 @@ function viewWeek(){
     <label class="chk"><input type="checkbox" data-sel="air" ${S.set.air?'checked':''}> Favoriser l'air fryer</label>
     <label class="chk"><input type="checkbox" data-sel="cook" ${S.set.cook?'checked':''}> Favoriser le Cookeo</label>
     <label class="chk"><input type="checkbox" data-sel="ufr" ${S.set.ufr?'checked':''}> Utiliser d'abord ce qu'il y a dans le frigo</label>
+    <label class="chk"><input type="checkbox" data-sel="cheap" ${S.set.cheap?'checked':''}> Favoriser les petits budgets</label>
     <label class="chk"><input type="checkbox" data-sel="season" ${S.set.season?'checked':''}> Favoriser la saison (${MN[curMonth()-1]})</label>
     <button class="btn ghost" data-act="deopen" data-id="">➕ Ajouter ma recette</button><button class="btn" data-act="gen">${plan?'Reproposer les repas non verrouillés':'Proposer ma semaine'}</button></div>`;
   if(!plan){
@@ -1549,7 +1803,7 @@ function viewDishes(){
   const own = allOwn(), f = profile();
   const top = Object.keys(f).sort((a,b)=>f[b]-f[a]).slice(0,8);
   const okF = d=>(S.filter==='all'||d.st===S.filter) && (S.apf==='all'||(d.ap||[]).includes(S.apf)) && (!S.nf||S.nf==='all'||nutTags(d).cal===S.nf) && (!S.pf||S.pf==='all'||nutTags(d).pro===S.pf) && (!S.seasonOnly||inSeason(d,curMonth())===true);
-  let h = `<div class="row" style="margin-bottom:8px"><button class="btn sm" data-act="deopen" data-id="">➕ Ma recette</button> <button class="btn sm" data-act="ideasopen" data-v="any">🎲 Idées de recettes</button> <button class="btn sm" data-act="rdopen">🥡 Ajouter un plat tout prêt (pastabox, ravioles…)</button></div><h2 class="sec" style="margin-top:6px">Ce que j'ai repéré dans tes goûts</h2>
+  let h = `<div class="row" style="margin-bottom:8px"><button class="btn sm" data-act="deopen" data-id="">➕ Ma recette</button> <button class="btn sm" data-act="ideasopen" data-v="any">🎲 Idées de recettes</button> <button class="btn sm" data-act="ideasopen" data-v="cheap">🪙 Petit budget</button> <button class="btn sm" data-act="rdopen">🥡 Ajouter un plat tout prêt (pastabox, ravioles…)</button></div><h2 class="sec" style="margin-top:6px">Ce que j'ai repéré dans tes goûts</h2>
     <p class="lead">D'après ta liste, tes ♥ et les nouveautés validées. C'est ce que je privilégie pour les suggestions.</p>
     <div class="taste">${top.map(t=>`<span class="chip">${esc(TAGLAB[t])}</span>`).join('')}</div>
     <p class="note">${banList().length?'Jamais proposé : '+esc(banList().join(', '))+'.':''}</p>`;
@@ -1858,7 +2112,7 @@ function viewShop(){
   const nav = mode==='week'
     ? `<button class="ib" data-act="wprev" aria-label="Semaine précédente">‹</button><div class="wlabel">${esc(D.label)}</div><button class="ib" data-act="wnext" aria-label="Semaine suivante">›</button>`
     : `<button class="ib" data-act="cmprev" aria-label="Mois précédent">‹</button><div class="wlabel">${esc(D.label)}</div><button class="ib" data-act="cmnext" aria-label="Mois suivant">›</button>`;
-  let h = `<div class="seg" role="group" aria-label="Période"><button data-act="cmode" data-v="week" aria-pressed="${mode==='week'}">Semaine</button><button data-act="cmode" data-v="month" aria-pressed="${mode==='month'}">Mois</button></div>
+  let h = `<div class="row" style="margin-bottom:10px"><button class="btn sm" data-act="simopen">🧮 Simuler mes courses</button><button class="btn sm ghost" data-act="ideasopen" data-v="cheap">🪙 Recettes petit budget</button></div><div class="seg" role="group" aria-label="Période"><button data-act="cmode" data-v="week" aria-pressed="${mode==='week'}">Semaine</button><button data-act="cmode" data-v="month" aria-pressed="${mode==='month'}">Mois</button></div>
     <div class="weekbar">${nav}</div>`;
   if(!D.entries.length){
     h += `<div class="empty"><div class="e">🛒</div><h2>Rien à acheter pour l'instant</h2><p>${D.planned?'Tous les repas de cette période sont déjà cuisinés.':'Aucun repas n\'est planifié sur cette période.'}</p>
@@ -1888,6 +2142,7 @@ function viewSheet(){
   if(S.sheet==='mv') return viewMvSheet();
   if(S.sheet==='ideas') return viewIdeasSheet();
   if(S.sheet==='place') return viewPlaceSheet();
+  if(S.sheet==='sim') return viewSimSheet();
   if(S.sheet==='dedit') return viewDeditSheet();
   if(S.sheet==='ready') return viewReadySheet();
   if(S.sheet==='fedit') return viewFeditSheet();
@@ -2347,7 +2602,7 @@ async function initSync(){
     if(!snap.metadata.fromCache) SYNC.defin.set = true;
     if(snap.exists){
       const d = JSON.parse(J(snap.data())), js = J(d);
-      if(SH.set!==js){ SH.set = js; S.set = Object.assign({mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true}, d); saveLocal(); scheduleRender(); }
+      if(SH.set!==js){ SH.set = js; S.set = Object.assign({mode:'soir7',discover:2,mush:false,air:false,season:true,cook:false,ufr:true,cheap:false,maxpp:2}, d); saveLocal(); scheduleRender(); }
     }
     checkReady();
   }, fail);
@@ -2388,10 +2643,15 @@ document.addEventListener('click', e=>{
   else if(a==='apf'){ S.apf=v; }
   else if(a==='ppset'){ const nv=Math.round(+v); S.pp=S.pp||{}; if(nv<=0||nv===hhSize()) delete S.pp[id]; else S.pp[id]=Math.min(100,nv); saveLocal(); }
   else if(a==='nf'){ S.nf=v; }
+  else if(a==='simopen'){ simState(); S.sheet='sim'; S.open=null; S.focusModal=true; }
+  else if(a==='simshop'){ const st=simState(); st.shop=v; st.over={}; CCOST.clear(); saveLocal(); }
+  else if(a==='simcrit'){ const st=simState(), k=st.crit.indexOf(v); if(k>=0) st.crit.splice(k,1); else st.crit.push(v); if(!st.crit.length) st.crit=['cheap']; st.over={}; saveLocal(); }
+  else if(a==='simalt'){ const st=simState(), sh=SHOPS.find(s=>s.k===st.shop)||SHOPS[2], c=simCands(i,sh), N=simNeeds(), cur=(simCompute(sh.k,st.crit,N).lines.find(l=>l.ci===i)||{}).c; const j=cur?c.findIndex(x=>x.tier===cur.tier):-1; st.over[i]=c[(j+1)%c.length].tier; saveLocal(); }
+  else if(a==='simcopy'){ const st=simState(), sh=SHOPS.find(s=>s.k===st.shop)||SHOPS[2], tx=simText(simCompute(sh.k,st.crit),sh); if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(tx).then(()=>toast('Liste copiée')).catch(()=>toast('Copie impossible')); return; }
   else if(a==='mvopen'){ S.mv=i; S.sheet='mv'; S.focusModal=true; }
   else if(a==='mvto'){ const pl=S.plans[S.week]; if(pl && S.mv!=null && i!==S.mv){ const x=pl.slots[S.mv]; pl.slots[S.mv]=pl.slots[i]; pl.slots[i]=x; save(); toast('Repas déplacé'); } S.sheet=null; S.mv=null; }
   else if(a==='deopen'){ let did=id||null; if(did && IDEAS[did]){ did=ideaToCustom(IDEAS[did]).id; save(); } S.de={id:did}; S.sheet='dedit'; S.open=null; S.focusModal=true; }
-  else if(a==='ideasopen'){ const m=v||'any'; const L=m==='fridge'?fridgeIdeas(8):wsample(GEN.filter(d=>!S.adopted[d.id] && !excludedBy(d).length),8); S.ideas={mode:m,list:L.map(d=>d.id)}; S.sheet='ideas'; S.open=null; S.focusModal=true; }
+  else if(a==='ideasopen'){ const m=v||'any'; const L=ideasList(m); S.ideas={mode:m,list:L.map(d=>d.id)}; S.sheet='ideas'; S.open=null; S.focusModal=true; }
   else if(a==='ideaopen'){ S.sheet=null; S.open=id; S.focusModal=true; }
   else if(a==='ideaadd'){ if(IDEAS[id]) ideaToCustom(IDEAS[id]); else S.adopted[id]=true; S.open=null; save(); toast('Ajouté à tes plats'); }
   else if(a==='ideaplace'){ S.pl=id; S.sheet='place'; S.open=null; S.focusModal=true; }
@@ -2462,10 +2722,10 @@ document.addEventListener('click', e=>{
       if(!catalog().has(k)){ const mm=rcMatch(name); if(mm) k=mm.k; }
       if(!catalog().has(k)){ const it={id:'i'+Date.now()+'_'+n,name,e:r.e||'🧺',type:'autre',sub:''}; S.myIng.push(it); applyMyIng(it); CATM=null; }
       const sz=rcSize(r.size); if(sz) stockAmt(k,sz.amt*r.q,sz.unit); else stockAdd(k,r.q*packOf(k));
-      if(r.price>0){ const c=catalog().get(k); items.push({n:name,e:r.e,r:c?c.r:guessRayon(name),q:r.q,price:r.price}); }
+      if(r.price>0){ const c=catalog().get(k); items.push({n:name,e:r.e,r:c?c.r:guessRayon(name),q:r.q,price:r.price}); const ci=priceCat(name); if(ci>=0){ S.known=S.known||{}; S.known[(S.rc.shop||simState().shop)+'|'+ci]={n:name,size:r.size||'',price:Math.round(r.price/r.q*100)/100,date:S.rc.date||''}; } }
       n++;
     });
-    if(items.length){ S.buys=S.buys||[]; S.buys.push({id:'p'+Date.now(),date:S.rc.date||iso(new Date()),doc:S.rc.doc||0,items}); }
+    if(items.length){ S.buys=S.buys||[]; S.buys.push({id:'p'+Date.now(),date:S.rc.date||iso(new Date()),doc:S.rc.doc||0,shop:S.rc.shop||simState().shop,items}); }
     S.sheet=null; S.rc=null; save(); toast(n+' article'+(n>1?'s':'')+' ajouté'+(n>1?'s':'')+' au frigo');
   }
   else if(a==='p2pinv'){ if(!S.link){ const n=Date.now(); S.ts=S.ts||{}; P2C.forEach(c=>{ S.ts[c]=n; }); S.link={role:'host',slot:'a',me:'cm-'+p2pRid(),peer:'',token:p2pRid()}; S.who='a'; saveLocal(); p2pStart(); relayStart(); } }
@@ -2614,6 +2874,7 @@ document.addEventListener('change', e=>{
   else if(k==='season'){ S.set.season=el.checked; save(); }
   else if(k==='cook'){ S.set.cook=el.checked; save(); }
   else if(k==='ufr'){ S.set.ufr=el.checked; save(); }
+  else if(k==='cheap'){ S.set.cheap=el.checked; save(); }
   else if(k==='chk'){ if(el.checked) S.checked[el.dataset.k]=true; else delete S.checked[el.dataset.k]; save(); }
   else if(k==='on'){ S.off[el.dataset.id] = !el.checked; save(); }
   else if(k==='cslot'){ C.slot=+el.value; return; }
